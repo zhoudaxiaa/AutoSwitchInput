@@ -47,6 +47,15 @@ func log(_ msg: String) {
     }
 }
 
+/// 简单的模态提示
+func showAlert(_ title: String, _ body: String) {
+    let a = NSAlert()
+    a.messageText = title
+    a.informativeText = body
+    a.addButton(withTitle: L("alert.ok"))
+    a.runModal()
+}
+
 // MARK: - TIS 输入源工具（无缓存）
 
 func tisString(_ src: TISInputSource, _ key: CFString) -> String {
@@ -94,6 +103,15 @@ func currentSourceName() -> String {
     guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return "?" }
     let n = tisName(src)
     return n.isEmpty ? "?" : n
+}
+
+/// 按 id 查显示名（找不到返回 nil）
+func sourceName(_ id: String) -> String? {
+    for s in enabledSelectableSources() where tisID(s) == id {
+        let n = tisName(s)
+        return n.isEmpty ? nil : n
+    }
+    return nil
 }
 
 /// 关键：每次都重新解析，绝不缓存
@@ -159,7 +177,127 @@ func appExists(_ bundle: String) -> Bool {
     return appURLIndex[bundle] != nil
 }
 
+// MARK: - 焦点指纹（识别应用内的具体区域）
+
+/// 一个应用里往往有好几种输入场景（VS Code 的终端和编辑器、Cursor 的聊天面板……）。
+/// 这里把当前焦点元素的特征抓成一个「指纹」，用来和配置里的细分规则比对。
+struct FocusFingerprint {
+    var role = ""
+    var subrole = ""
+    var identifier = ""
+    var title = ""
+    var placeholder = ""
+    var ancestorTitles: [String] = []
+    var ancestorIDs: [String] = []
+    /// Chromium/Electron 暴露的 DOM class 列表，比如 ["xterm-helper-textarea"]
+    /// 这是跨语言最稳定的标识，VS Code 终端/编辑器/AI 面板靠它区分
+    var domClasses: [String] = []
+
+    var summary: String {
+        var s = "role=\(role)"
+        if !subrole.isEmpty { s += " sub=\(subrole)" }
+        if !identifier.isEmpty { s += " id=\(identifier)" }
+        if !domClasses.isEmpty { s += " dom=\(domClasses)" }
+        if !title.isEmpty { s += " title=\(title.prefix(40))" }
+        if !placeholder.isEmpty { s += " ph=\(placeholder.prefix(30))" }
+        if !ancestorTitles.isEmpty { s += " anc=\(ancestorTitles.prefix(3))" }
+        return s
+    }
+}
+
+func axString(_ el: AXUIElement, _ key: String) -> String {
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(el, key as CFString, &v) == .success,
+          let s = v as? String else { return "" }
+    return s
+}
+
+func axStringArray(_ el: AXUIElement, _ key: String) -> [String] {
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(el, key as CFString, &v) == .success,
+          let a = v as? [String] else { return [] }
+    return a.filter { !$0.isEmpty }
+}
+
+/// 取某个进程当前焦点元素。无辅助功能权限时返回 nil。
+func focusedElement(pid: pid_t) -> AXUIElement? {
+    guard pid > 0 else { return nil }
+    let appEl = AXUIElementCreateApplication(pid)
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(appEl, kAXFocusedUIElementAttribute as CFString, &v) == .success,
+          let raw = v else { return nil }
+    return (raw as! AXUIElement)
+}
+
+/// 把元素身上所有能读出来的属性都列一遍（Electron 会暴露 AXDOMClassList 这类非标准属性）
+func axAllAttributes(_ el: AXUIElement) -> [String] {
+    var names: CFArray?
+    guard AXUIElementCopyAttributeNames(el, &names) == .success,
+          let arr = names as? [String] else { return [] }
+
+    var out: [String] = []
+    for n in arr.sorted() {
+        var v: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, n as CFString, &v) == .success, let val = v else { continue }
+        if let s = val as? String, !s.isEmpty {
+            out.append("\(n)=\(s.prefix(90))")
+        } else if let a = val as? [String], !a.isEmpty {
+            out.append("\(n)=\(a.prefix(6))")
+        } else if let num = val as? NSNumber {
+            out.append("\(n)=\(num)")
+        }
+    }
+    return out
+}
+
+/// 取某个进程当前焦点元素的指纹。无辅助功能权限时返回 nil。
+func focusedFingerprint(pid: pid_t) -> FocusFingerprint? {
+    guard let cur0 = focusedElement(pid: pid) else { return nil }
+    var cur = cur0
+
+    var fp = FocusFingerprint()
+    fp.role = axString(cur, kAXRoleAttribute)
+    fp.subrole = axString(cur, kAXSubroleAttribute)
+    fp.identifier = axString(cur, kAXIdentifierAttribute)
+    fp.title = axString(cur, kAXTitleAttribute)
+    fp.placeholder = axString(cur, kAXPlaceholderValueAttribute)
+    if fp.title.isEmpty { fp.title = axString(cur, kAXDescriptionAttribute) }
+    fp.domClasses = axStringArray(cur, "AXDOMClassList")
+
+    // 往上爬，收集祖先的标题 / identifier —— 面板名、webview 名往往在这里
+    for _ in 0..<12 {
+        var p: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(cur, kAXParentAttribute as CFString, &p) == .success,
+              let pv = p else { break }
+        cur = pv as! AXUIElement
+
+        let t = axString(cur, kAXTitleAttribute)
+        let d = axString(cur, kAXDescriptionAttribute)
+        let i = axString(cur, kAXIdentifierAttribute)
+        if !t.isEmpty { fp.ancestorTitles.append(t) }
+        if !d.isEmpty && d != t { fp.ancestorTitles.append(d) }
+        if !i.isEmpty { fp.ancestorIDs.append(i) }
+    }
+    return fp
+}
+
 // MARK: - 配置
+
+/// 应用内的细分规则：同一个应用，不同位置用不同输入法
+struct ContextRule: Codable {
+    var bundle: String
+    var source: String
+    /// 精确匹配 AXRole，例如 AXTextArea
+    var role: String? = nil
+    /// AXIdentifier 包含匹配（最可靠，比如 xterm 的 textarea）
+    var identifier: String? = nil
+    /// 焦点元素自身或其祖先的标题包含该词
+    var titleContains: String? = nil
+    /// 焦点元素的 DOM class 包含该词（Electron 应用的稳定标识）
+    var classContains: String? = nil
+    /// 给用户看的备注，例如「终端」
+    var note: String? = nil
+}
 
 struct Config: Codable {
     var enabled: Bool = true
@@ -176,6 +314,8 @@ struct Config: Codable {
     var watchdogInterval: Double = 1.5
     /// 界面语言："zh-Hans" / "en"，nil = 跟随系统
     var language: String? = nil
+    /// 应用内的细分规则（VS Code 终端 / 编辑器分别用不同输入法）
+    var contexts: [ContextRule] = []
 
     init() {}
 
@@ -192,6 +332,7 @@ struct Config: Codable {
         verifyDelays = try c.decodeIfPresent([Double].self, forKey: .verifyDelays) ?? d.verifyDelays
         watchdogInterval = try c.decodeIfPresent(Double.self, forKey: .watchdogInterval) ?? d.watchdogInterval
         language = try c.decodeIfPresent(String.self, forKey: .language)
+        contexts = try c.decodeIfPresent([ContextRule].self, forKey: .contexts) ?? d.contexts
     }
 }
 
@@ -583,6 +724,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
                     app.config.apps.removeValue(forKey: b)
                 }
                 app.saveConfig()
+                log("✎ 改规则 \(b) → \(newID ?? "不设置")")
                 self?.reload()
             }
             listStack.addArrangedSubview(row)
@@ -901,6 +1043,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     var activationBundle: String?
     var lastExternalBundle: String?
 
+    /// 菜单打开那一刻的前台应用 —— 菜单弹出后再问「前台」可能已经不是它了
+    var menuFrontPID: pid_t = 0
+    var menuFrontBundle: String?
+
     var popover: NSPopover?
     var quickPanel: QuickPanelController?
     var popoverLastClosed: Date = .distantPast
@@ -908,6 +1054,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     /// 只有真正加载了配置的主实例才允许写盘。
     /// 否则"被 launchctl 拉起的第二实例"会在退出时用空默认值覆盖配置。
     private var isPrimaryInstance = false
+
+    /// 启动时刻：用来区分「用户点了 App」和「启动时系统补发的 reopen」
+    private let launchedAt = Date()
+
+    /// 第一次运行（还没有配置文件）—— 这时才把设置窗口亮出来
+    private var isFirstRun = false
 
     private var settings: SettingsWindowController { .shared }
 
@@ -1036,6 +1188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         isPrimaryInstance = true
         loadConfig()
         if !FileManager.default.fileExists(atPath: configURL.path) {
+            isFirstRun = true
             importLegacyRules()
             saveConfig()
         }
@@ -1072,13 +1225,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
                 .split(separator: "\n", omittingEmptySubsequences: false)
                 .map { $0.trimmingCharacters(in: .whitespaces) }
             if let target = lines.first, !target.isEmpty {
+                let mode = lines.count > 1 ? lines[1] : ""
+
+                if mode == "axdump" {
+                    // 走 open 启动才能被 TCC 认成本应用的权限，所以 dump 也从这里进
+                    dumpFocus(to: target,
+                              bundleID: lines.count > 2 && !lines[2].isEmpty ? lines[2] : nil,
+                              delay: lines.count > 3 ? (Double(lines[3]) ?? 2) : 2)
+                    return
+                }
+
                 // 第 4 行可以指定语言，用来验证「切换语言 → 整窗重建」这条路径
                 if lines.count > 3, !lines[3].isEmpty, lines[3] != "system" {
                     setAppLanguage(lines[3])
                     settings.rebuild()
                     log("debug: language=\(lines[3]) rebuilt=\(settings.contentViewForSnapshot != nil)")
                 }
-                if lines.count > 1, lines[1] == "panel" {
+                if mode == "panel" {
                     snapshotPanel(to: target, demoBundle: lines.count > 2 ? lines[2] : nil)
                 } else {
                     snapshotWindow(to: target)
@@ -1104,6 +1267,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
             return
         }
 
+        // 调试用：打印某个应用当前焦点元素的 AX 指纹，用来配细分规则
+        //   --ax-dump <输出路径> [bundle id] [延迟秒]
+        if let idx = CommandLine.arguments.firstIndex(of: "--ax-dump"),
+           idx + 1 < CommandLine.arguments.count {
+            let path = CommandLine.arguments[idx + 1]
+            let bundle = idx + 2 < CommandLine.arguments.count ? CommandLine.arguments[idx + 2] : nil
+            let delay = idx + 3 < CommandLine.arguments.count
+                ? (Double(CommandLine.arguments[idx + 3]) ?? 3) : 3
+            dumpFocus(to: path, bundleID: bundle, delay: delay)
+            return
+        }
+
         // 调试用：验证 popover 能否弹出
         if CommandLine.arguments.contains("--popover-demo") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
@@ -1119,7 +1294,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
 
         log("=== 启动 | 规则 \(config.apps.count) 条 | learn=\(config.learn) | args=\(CommandLine.arguments) ===")
 
-        if !CommandLine.arguments.contains("--silent") {
+        // 只在第一次运行（还没有配置文件）时把设置窗口亮出来，
+        // 之后启动就安静待在菜单栏里
+        if isFirstRun && !CommandLine.arguments.contains("--silent") {
             settings.show()
         }
 
@@ -1145,6 +1322,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // 刚启动时 LaunchServices 也会发一次 reopen，别因此弹窗
+        if Date().timeIntervalSince(launchedAt) < 1.5 { return true }
         settings.show()
         return true
     }
@@ -1153,6 +1332,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     /// 必须自己接管「重新打开」Apple Event，否则窗口关掉后再点 App 没反应。
     @objc func handleReopenEvent(_ event: NSAppleEventDescriptor,
                                  withReply reply: NSAppleEventDescriptor) {
+        if Date().timeIntervalSince(launchedAt) < 1.5 { return }
         settings.show()
     }
 
@@ -1311,6 +1491,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         let front = NSWorkspace.shared.frontmostApplication
         let bundle = front?.bundleIdentifier ?? "-"
         let appName = front?.localizedName ?? L("panel.unknown")
+        menuFrontPID = front?.processIdentifier ?? 0
+        menuFrontBundle = front?.bundleIdentifier
 
         let open = NSMenuItem(title: L("menu.settings"), action: #selector(openSettings), keyEquivalent: ",")
         open.target = self
@@ -1332,6 +1514,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         clear.target = self
         clear.isEnabled = config.apps[bundle] != nil
         menu.addItem(clear)
+
+        // 应用内细分：把当前这个位置单独记成一条规则
+        let remember = NSMenuItem(title: LF("menu.rememberFocus", currentSourceName()),
+                                  action: #selector(rememberFocus), keyEquivalent: "")
+        remember.target = self
+        remember.isEnabled = front != nil && bundle != kBundleSelf && AXIsProcessTrusted()
+        menu.addItem(remember)
+
+        // 编辑器/IDE：一键套用「终端+编辑器英文、AI 聊天中文」预设
+        if isEditorBundle(bundle) {
+            let preset = NSMenuItem(title: L("menu.editorPreset"),
+                                    action: #selector(applyEditorPresetNow), keyEquivalent: "")
+            preset.target = self
+            preset.isEnabled = AXIsProcessTrusted()
+            menu.addItem(preset)
+        }
+
+        let ctxCount = config.contexts.filter { $0.bundle == bundle }.count
+        if ctxCount > 0 {
+            let sub = NSMenu()
+            for (i, r) in config.contexts.enumerated() where r.bundle == bundle {
+                let item = NSMenuItem(title: "\(r.note ?? "-") → \(sourceName(r.source) ?? r.source)",
+                                      action: #selector(deleteContextRule(_:)), keyEquivalent: "")
+                item.target = self
+                item.tag = i
+                sub.addItem(item)
+            }
+            sub.addItem(.separator())
+            let clearAll = NSMenuItem(title: L("menu.clearContexts"),
+                                      action: #selector(clearContexts), keyEquivalent: "")
+            clearAll.target = self
+            sub.addItem(clearAll)
+
+            let parent = NSMenuItem(title: LF("menu.contexts", ctxCount), action: nil, keyEquivalent: "")
+            parent.submenu = sub
+            menu.addItem(parent)
+        }
+
+        // 诊断项：只在 Support 目录里有 debug-ax 文件时出现，普通用户看不到
+        if FileManager.default.fileExists(
+            atPath: supportDir.appendingPathComponent("debug-ax").path) {
+            let dump = NSMenuItem(title: L("menu.axdump"),
+                                  action: #selector(dumpFocusNow), keyEquivalent: "")
+            dump.target = self
+            menu.addItem(dump)
+        }
 
         menu.addItem(.separator())
 
@@ -1386,6 +1614,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         saveConfig()
         log("✎ 清除规则 \(bundle)")
         settings.reload()
+    }
+
+    @objc func deleteContextRule(_ sender: NSMenuItem) {
+        guard sender.tag >= 0, sender.tag < config.contexts.count else { return }
+        let r = config.contexts.remove(at: sender.tag)
+        saveConfig()
+        log("✎ 删除细分规则 \(r.bundle) [\(r.note ?? "-")]")
+        settings.reload()
+    }
+
+    @objc func clearContexts() {
+        guard let bundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return }
+        clearContextRules(for: bundle)
+    }
+
+    /// 诊断：把「此刻的焦点特征」追加到 ax-focus.txt，方便边点边记
+    @objc func dumpFocusNow() {
+        let path = supportDir.appendingPathComponent("ax-focus.txt")
+        var out = "\n--- \(Date()) ---\n"
+
+        // 优先用菜单弹出瞬间记下的前台应用
+        var pid = menuFrontPID
+        var bundle = menuFrontBundle
+        // 如果前台变成了自己（点图标时偶尔会这样），退回到最后激活的外部应用
+        if bundle == kBundleSelf || pid <= 0 {
+            if let b = lastExternalBundle,
+               let app = NSRunningApplication.runningApplications(withBundleIdentifier: b).first {
+                pid = app.processIdentifier
+                bundle = b
+            } else if pid <= 0, let front = NSWorkspace.shared.frontmostApplication {
+                pid = front.processIdentifier
+                bundle = front.bundleIdentifier
+            }
+        }
+        guard pid > 0 else {
+            out += "no frontmost app\n"
+            appendText(out, to: path)
+            return
+        }
+
+        out += "app: \(bundle ?? "?") pid=\(pid)\n"
+        if let fp = focusedFingerprint(pid: pid) {
+            out += "  \(fp.summary)\n"
+            out += "  ancestorTitles: \(fp.ancestorTitles)\n"
+            out += "  ancestorIDs: \(fp.ancestorIDs)\n"
+        } else {
+            out += "  <nil>\n"
+        }
+        if let el = focusedElement(pid: pid) {
+            for line in axAllAttributes(el) { out += "    · \(line)\n" }
+        }
+        appendText(out, to: path)
+        log("ax focus dumped -> \(path.path)")
+    }
+
+    private func appendText(_ text: String, to url: URL) {
+        guard let data = text.data(using: .utf8) else { return }
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile()
+            h.write(data)
+            try? h.close()
+        } else {
+            try? data.write(to: url)
+        }
     }
 
     @objc func toggleEnabled() {
@@ -1481,6 +1773,217 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         axObserver = obs
     }
 
+    // MARK: 应用内细分规则
+
+    /// 规则越具体越优先：DOM class / identifier > 标题词 > 只看 role
+    private func specificity(_ r: ContextRule) -> Int {
+        var s = 0
+        if let c = r.classContains, !c.isEmpty { s += 8 }
+        if let i = r.identifier, !i.isEmpty { s += 4 }
+        if let t = r.titleContains, !t.isEmpty { s += 2 }
+        if let role = r.role, !role.isEmpty { s += 1 }
+        return s
+    }
+
+    private func contextMatches(_ r: ContextRule, _ fp: FocusFingerprint) -> Bool {
+        if let role = r.role, !role.isEmpty, fp.role != role { return false }
+        if let c = r.classContains, !c.isEmpty {
+            let hit = fp.domClasses.contains { $0.localizedCaseInsensitiveContains(c) }
+            if !hit { return false }
+        }
+        if let id = r.identifier, !id.isEmpty {
+            let hit = fp.identifier.localizedCaseInsensitiveContains(id)
+                || fp.ancestorIDs.contains { $0.localizedCaseInsensitiveContains(id) }
+            if !hit { return false }
+        }
+        if let t = r.titleContains, !t.isEmpty {
+            let hay = ([fp.title, fp.placeholder] + fp.ancestorTitles).joined(separator: "\u{1F}")
+            if !hay.localizedCaseInsensitiveContains(t) { return false }
+        }
+        // 条件全空的规则等于匹配一切，直接忽略，免得一条空规则吃满整个应用
+        if r.role == nil && r.identifier == nil && r.titleContains == nil && r.classContains == nil {
+            return false
+        }
+        return true
+    }
+
+    /// 当前焦点位置有没有更细的规则
+    func contextSource(bundle: String) -> String? {
+        let rules = config.contexts.enumerated().filter { $0.element.bundle == bundle }
+        guard !rules.isEmpty else { return nil }
+        guard let front = NSWorkspace.shared.frontmostApplication,
+              front.bundleIdentifier == bundle else { return nil }
+        guard let fp = focusedFingerprint(pid: front.processIdentifier) else { return nil }
+
+        // 越具体越先匹配；同分时保持配置里的先后顺序
+        let ordered = rules.sorted {
+            let a = specificity($0.element), b = specificity($1.element)
+            return a == b ? $0.offset < $1.offset : a > b
+        }
+        for (_, r) in ordered where contextMatches(r, fp) {
+            return r.source
+        }
+        return nil
+    }
+
+    /// 把「当前焦点 + 当前输入法」记成一条细分规则
+    @objc func rememberFocus() {
+        guard let front = NSWorkspace.shared.frontmostApplication,
+              let bundle = front.bundleIdentifier, bundle != kBundleSelf else { return }
+        guard let fp = focusedFingerprint(pid: front.processIdentifier) else {
+            log("记住焦点失败：拿不到焦点元素（多半是未授权辅助功能）")
+            showAlert(L("alert.ax.title"), L("alert.ax.body"))
+            return
+        }
+        guard let cur = currentSourceID() else { return }
+
+        // 尽量用最窄的条件：DOM class 最稳，其次 identifier，最后退到 role + 标题词
+        var rule = ContextRule(bundle: bundle, source: cur)
+        if let cls = fp.domClasses.first(where: { !$0.isEmpty && $0.count <= 60 }) {
+            rule.classContains = cls
+            if !fp.role.isEmpty { rule.role = fp.role }
+        } else if !fp.identifier.isEmpty {
+            rule.identifier = fp.identifier
+            if !fp.role.isEmpty { rule.role = fp.role }
+        } else {
+            rule.role = fp.role
+            if let t = fp.ancestorTitles.first(where: { !$0.isEmpty && $0.count <= 40 }) {
+                rule.titleContains = t
+            }
+        }
+        rule.note = rule.classContains ?? rule.identifier ?? rule.titleContains ?? fp.role
+
+        // 同条件的旧规则直接覆盖，避免越点越多
+        config.contexts.removeAll {
+            $0.bundle == rule.bundle && $0.identifier == rule.identifier
+                && $0.role == rule.role && $0.titleContains == rule.titleContains
+                && $0.classContains == rule.classContains
+        }
+        config.contexts.append(rule)
+        saveConfig()
+
+        log("✎ 细分规则 +1 \(bundle) → \(cur) [\(rule.note ?? "-")] \(fp.summary)")
+        refreshStatusTitle()
+        settings.reload()
+        if popover?.isShown == true { quickPanel?.refresh() }
+    }
+
+    /// 清掉某个应用的全部细分规则
+    func clearContextRules(for bundle: String) {
+        let n = config.contexts.filter { $0.bundle == bundle }.count
+        guard n > 0 else { return }
+        config.contexts.removeAll { $0.bundle == bundle }
+        saveConfig()
+        log("✎ 清除细分规则 \(bundle) ×\(n)")
+        settings.reload()
+        if popover?.isShown == true { quickPanel?.refresh() }
+    }
+
+    // MARK: 编辑器预设
+
+    /// 这些编辑器/IDE 的 DOM class 比较稳定，可以套用预设
+    static let editorPresetBundles = [
+        "com.microsoft.VSCode",
+        "com.todesktop.230313mzl4w4u92",   // Cursor
+        "com.exafunction.windsurf",
+        "com.visualstudio.code.oss",
+    ]
+
+    func isEditorBundle(_ b: String) -> Bool {
+        AppDelegate.editorPresetBundles.contains(b)
+    }
+
+    /// 英文输入法（一般是 ABC）
+    func englishSourceID() -> String? {
+        let srcs = typeableSources()
+        if let s = srcs.first(where: { $0.id == "com.apple.keylayout.ABC" }) { return s.id }
+        if let s = srcs.first(where: { $0.id.lowercased().contains("abc") }) { return s.id }
+        return srcs.first(where: { $0.id.contains("keylayout") })?.id
+    }
+
+    /// 中文输入法：优先用这个应用已有的规则，否则取第一个第三方输入法
+    func chineseSourceID(preferring bundle: String) -> String? {
+        let srcs = typeableSources()
+        let en = englishSourceID()
+        if let cur = config.apps[bundle], cur != en, srcs.contains(where: { $0.id == cur }) {
+            return cur
+        }
+        return srcs.first(where: { $0.id.contains("inputmethod") })?.id
+    }
+
+    /// 终端 / 编辑器用英文，AI 聊天面板用中文
+    func applyEditorPreset(for bundle: String) {
+        guard let en = englishSourceID() else {
+            showAlert(L("alert.preset.title"), L("alert.preset.body"))
+            return
+        }
+        guard let zh = chineseSourceID(preferring: bundle) else {
+            showAlert(L("alert.preset.title"), L("alert.preset.body"))
+            return
+        }
+
+        config.contexts.removeAll { $0.bundle == bundle }
+        config.contexts.append(ContextRule(
+            bundle: bundle, source: en, role: "AXTextField",
+            classContains: "xterm-helper-textarea", note: L("preset.terminal")))
+        config.contexts.append(ContextRule(
+            bundle: bundle, source: en, role: "AXTextArea",
+            classContains: "native-edit-context", note: L("preset.editor")))
+        config.contexts.append(ContextRule(
+            bundle: bundle, source: zh, role: "AXTextArea",
+            classContains: "ProseMirror", note: L("preset.chat")))
+        saveConfig()
+
+        log("✎ 套用编辑器预设 \(bundle)：终端/编辑器 → \(en)，聊天 → \(zh)")
+        refreshStatusTitle()
+        settings.reload()
+        if popover?.isShown == true { quickPanel?.refresh() }
+        scheduleApply(reason: "套用预设")
+    }
+
+    @objc func applyEditorPresetNow() {
+        guard let bundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+              bundle != kBundleSelf else { return }
+        applyEditorPreset(for: bundle)
+    }
+
+    /// 诊断：把焦点元素的 AX 特征写成文本，用来配细分规则
+    func dumpFocus(to path: String, bundleID: String?, delay: Double) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            var out = "AXIsProcessTrusted: \(AXIsProcessTrusted())\n"
+            out += "time: \(Date())\n"
+
+            let targets: [NSRunningApplication]
+            if let b = bundleID, !b.isEmpty {
+                targets = NSRunningApplication.runningApplications(withBundleIdentifier: b)
+            } else if let f = NSWorkspace.shared.frontmostApplication {
+                targets = [f]
+            } else {
+                targets = []
+            }
+
+            if targets.isEmpty {
+                out += "\n未找到目标应用（可能没在运行）\n"
+            }
+
+            for app in targets {
+                let b = app.bundleIdentifier ?? "?"
+                out += "\n=== \(b) pid=\(app.processIdentifier) active=\(app.isActive) ===\n"
+                if let fp = focusedFingerprint(pid: app.processIdentifier) {
+                    out += "  \(fp.summary)\n"
+                    out += "  ancestorTitles: \(fp.ancestorTitles)\n"
+                    out += "  ancestorIDs: \(fp.ancestorIDs)\n"
+                } else {
+                    out += "  <拿不到焦点元素：未授权辅助功能，或该应用不暴露 AX>\n"
+                }
+            }
+
+            try? out.write(toFile: path, atomically: true, encoding: .utf8)
+            log("ax dump -> \(path)")
+            NSApp.terminate(nil)
+        }
+    }
+
     // MARK: 学习 / 识别用户操作
 
     func onExternalInputSourceChange() {
@@ -1488,8 +1991,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         let cur = currentSourceID()
         refreshStatusTitle()
 
+        // 自己造成的切换：TIS 有时会连发两次通知，所以不能在第一次就把
+        // expectedID 清掉，否则第二次会漏到「学习」里污染规则
         if let exp = expectedID, now < expectedUntil, cur == exp {
-            expectedID = nil
             return
         }
         expectedID = nil
@@ -1497,6 +2001,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         guard config.enabled, config.learn, let cur = cur else { return }
         guard let bundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return }
         guard bundle != kBundleSelf, !config.excluded.contains(bundle) else { return }
+
+        // 这个应用有细分规则时，输入法是由「位置」决定的，
+        // 学到的当前值只会污染应用级兜底规则
+        guard !config.contexts.contains(where: { $0.bundle == bundle }) else { return }
 
         // 激活后 1 秒内的变更属于"系统/应用自己在恢复输入法"，不是用户操作
         guard Date().timeIntervalSince(lastActivationAt) > 1.0 else { return }
@@ -1522,6 +2030,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
+    /// 统一的「这个应用现在该用哪个输入法」判定。
+    /// 优先级：应用内细分规则 > 应用规则 > 默认输入法。
+    /// 所有触发路径（激活 / 焦点变化 / 看门狗）都必须走这里，
+    /// 否则看门狗会把细分规则刚切好的结果又纠回去。
+    func desiredSource(for bundle: String) -> String? {
+        contextSource(bundle: bundle) ?? config.apps[bundle] ?? config.defaultSource
+    }
+
     func applyNow(reason: String) {
         guard config.enabled else { return }
         guard let front = NSWorkspace.shared.frontmostApplication,
@@ -1529,7 +2045,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         guard bundle != kBundleSelf, !config.excluded.contains(bundle) else { return }
         guard Date() >= userOverrideUntil else { return }
 
-        guard let desired = config.apps[bundle] ?? config.defaultSource else { return }
+        guard let desired = desiredSource(for: bundle) else { return }
         let cur = currentSourceID()
         guard cur != desired else { return }
 
@@ -1575,7 +2091,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
             guard self.config.enabled else { return }
             guard let bundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
                   bundle != kBundleSelf, !self.config.excluded.contains(bundle),
-                  let desired = self.config.apps[bundle] ?? self.config.defaultSource else { return }
+                  let desired = self.desiredSource(for: bundle) else { return }
             guard Date() >= self.userOverrideUntil else { return }
             guard currentSourceID() != desired else { return }
             if secureInputActive() { return }

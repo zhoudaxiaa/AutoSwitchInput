@@ -52,8 +52,16 @@ for lang in en zh-Hans; do
 done
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-echo "==> 临时签名"
-codesign --force --sign - --identifier com.local.autoswitchinput "$APP"
+echo "==> 签名"
+# 优先用本机自签名证书：ad-hoc 签名每次编译 cdhash 都会变，
+# macOS 会把「辅助功能」授权判为失效，用户得反复重新勾选。
+SIGN_ID="${SIGN_IDENTITY:-AutoSwitchInput Local}"
+if codesign --force --sign "$SIGN_ID" --identifier com.local.autoswitchinput "$APP" 2>/dev/null; then
+    echo "    证书: $SIGN_ID"
+else
+    codesign --force --sign - --identifier com.local.autoswitchinput "$APP"
+    echo "    证书: ad-hoc（未找到 $SIGN_ID）"
+fi
 codesign --verify "$APP" && echo "签名校验通过"
 
 echo "==> 完成: $APP"

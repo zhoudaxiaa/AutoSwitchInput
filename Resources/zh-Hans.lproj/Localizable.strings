@@ -6,6 +6,10 @@
 "menu.settings" = "打开设置…";
 "menu.assign" = "把「%@」设为该应用的输入法";
 "menu.clear" = "清除该应用的规则";
+"menu.rememberFocus" = "记住这个位置用「%@」";
+"menu.contexts" = "细分规则（%d）";
+"menu.axdump" = "诊断：导出当前焦点特征";
+"menu.clearContexts" = "清除本应用的细分规则";
 "menu.enabled" = "启用自动切换";
 "menu.learn" = "学习我手动切换的结果";
 "menu.login" = "开机自动启动";
@@ -45,9 +49,20 @@
 "alert.clean.body" = "这些应用在本机找不到，规则永远不会生效。";
 "alert.clean.ok" = "清理";
 "alert.cancel" = "取消";
+"alert.ok" = "好";
+"alert.ax.title" = "需要辅助功能权限";
+"alert.ax.body" = "识别应用内的具体位置（比如 VS Code 的终端和编辑器）需要读取焦点元素。\n\n到「系统设置 → 隐私与安全性 → 辅助功能」里勾选「自动切换输入法」，然后重新启动本应用。";
 
 /* 小面板 */
 "panel.app" = "该应用";
 "panel.unknown" = "未知应用";
 "panel.settings" = "打开设置…";
 "panel.quit" = "退出";
+
+/* 应用内细分 / 预设 */
+"menu.editorPreset" = "套用编辑器预设（终端/代码英文，AI 聊天中文）";
+"preset.terminal" = "终端";
+"preset.editor" = "编辑器";
+"preset.chat" = "AI 聊天";
+"alert.preset.title" = "套用预设失败";
+"alert.preset.body" = "没找到可用的中英文输入法。请先在系统设置里启用至少一个英文键盘和一个中文输入法。";

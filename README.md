@@ -24,6 +24,7 @@
 ## 功能
 
 - **按应用记忆输入法** —— 每个 App 一条规则，切到该 App 时自动切换，切走时恢复
+- **应用内细分** —— 同一个 App 里按位置区分，比如 VS Code 的终端/代码用 ABC、AI 聊天面板用中文输入法（见下）
 - **菜单栏常驻** —— 左键点图标弹出小面板，可直接改当前应用的规则；右键是完整菜单
 - **跟随学习** —— 手动切换输入法时自动记下，下次进入该应用直接生效（可关）
 - **默认输入法** —— 没配规则的应用统一用哪个输入法
@@ -32,6 +33,26 @@
 - **开机自启** —— 一个开关搞定
 - **中英双语** —— 跟随系统，也可以在设置里手动切成「简体中文 / English」，即时生效不用重启
 - 无 Dock 图标、无常驻内存泄漏、不联网
+
+## 应用内细分（VS Code / Cursor 这类编辑器）
+
+一个应用里往往有好几种输入场景：VS Code 的终端和代码区该用英文，Copilot / Cursor 的 AI 聊天框该用中文。这个版本可以做到。
+
+**怎么配**：右键点菜单栏图标 → 在 VS Code / Cursor / Windsurf 里会看到 **「套用编辑器预设」**，点一下就配好了：
+
+| 位置 | 判定依据 | 输入法 |
+| --- | --- | --- |
+| 终端 | `AXDOMClassList` 含 `xterm-helper-textarea` | 英文（ABC） |
+| 编辑器 | `AXDOMClassList` 含 `native-edit-context` | 英文（ABC） |
+| AI 聊天输入框 | `AXDOMClassList` 含 `ProseMirror` | 中文输入法 |
+
+其他应用可以自己教：把光标点进目标位置 → 右键菜单 → **「记住这个位置用「当前输入法」」**。它会自动挑最窄的匹配条件（优先用 DOM class，其次 identifier，最后才退到 role + 标题关键词），所以不会一条规则把整个应用吃满。
+
+**为什么用 `AXDOMClassList`**：Electron 应用的 `AXIdentifier` 通常是空的，标题又是本地化的（中文版 VS Code 的终端标题是「终端 1，zsh 运行命令」），拿标题匹配换个语言或升个版本就废了。`AXDOMClassList` 是 Chromium 暴露的非标准属性，跟语言和版本都无关，稳得多。
+
+**优先级**：应用内细分规则 > 应用规则 > 默认输入法。没匹配上的位置（比如侧边栏、搜索框）会回落到该应用的应用级规则。
+
+> 这个功能需要辅助功能权限（要读焦点元素）。没授权时整块跳过，行为和以前一样。
 
 ## 安装
 
@@ -102,11 +123,22 @@ open dist/AutoSwitchInput.app
   "excluded": ["com.apple.SecurityAgent"],
   "verifyDelays": [0.06, 0.18, 0.45],
   "watchdogInterval": 1.5,
-  "language": null
+  "language": null,
+  "contexts": [
+    {
+      "bundle": "com.microsoft.VSCode",
+      "source": "com.apple.keylayout.ABC",
+      "role": "AXTextField",
+      "classContains": "xterm-helper-textarea",
+      "note": "终端"
+    }
+  ]
 }
 ```
 
 `language` 可选 `null`（跟随系统）、`"zh-Hans"`、`"en"`。
+
+`contexts` 里每条规则的 `role` / `identifier` / `classContains` / `titleContains` 都是可选的，只校验填了的字段；越具体的规则越先匹配（`classContains` > `identifier` > `titleContains` > `role`）。
 
 写入前会自动备份一份 `config.json.bak`，读取失败时自动回退到备份。
 
@@ -171,6 +203,7 @@ Most similar tools break after a while. This one is built around stability: thre
 ### Features
 
 - Per-app input source rules
+- **Per-spot rules** inside an app — e.g. English in the VS Code terminal and editor, Chinese in the AI chat panel
 - Menu bar panel (left click) + full menu (right click)
 - Learns your manual switches
 - Default input source for apps without a rule
@@ -198,7 +231,19 @@ Or right-click → Open → Open.
 
 ### Accessibility permission
 
-Optional. App-switching triggers work through `NSWorkspace` notifications and need no permission at all. Granting accessibility only adds focus-level triggering (correcting the input source when you move between windows inside the same app).
+Optional for basic use. App-switching triggers work through `NSWorkspace` notifications and need no permission at all.
+
+**Required for per-spot rules.** Reading the focused element needs accessibility access. Grant it, then open Settings → Privacy & Security → Accessibility and tick the app.
+
+### Per-spot rules
+
+Right-click the menu bar icon inside VS Code / Cursor / Windsurf and pick **“Apply Editor Preset”**: English for the terminal and editor, your Chinese IME for the AI chat panel.
+
+For any other app, focus the target spot and pick **“Remember This Spot as …”** — it picks the narrowest matching condition automatically (DOM class first, then identifier, then role + title keyword).
+
+The discriminator is `AXDOMClassList`, a non-standard attribute Chromium exposes: Electron apps leave `AXIdentifier` empty and their titles are localized, so class names are the only stable signal across languages and versions.
+
+> After rebuilding the app locally, macOS invalidates the accessibility grant unless the binary is signed with a stable identity. `build.sh` uses a self-signed `AutoSwitchInput Local` certificate when available for exactly this reason.
 
 ### Config
 
