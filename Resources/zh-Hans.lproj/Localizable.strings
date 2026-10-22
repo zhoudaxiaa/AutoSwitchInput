@@ -1,0 +1,51 @@
+/* 自动切换输入法 — 简体中文 */
+
+"app.name" = "自动切换输入法";
+
+/* 菜单栏菜单 */
+"menu.settings" = "打开设置…";
+"menu.assign" = "把「%@」设为该应用的输入法";
+"menu.clear" = "清除该应用的规则";
+"menu.enabled" = "启用自动切换";
+"menu.learn" = "学习我手动切换的结果";
+"menu.login" = "开机自动启动";
+"menu.config" = "打开配置文件…";
+"menu.log" = "查看日志";
+"menu.quit" = "退出";
+
+/* 状态栏 */
+"statusbar.tip" = "自动切换输入法 · 当前：%@";
+"statusbar.off" = "关";
+
+/* 主窗口 */
+"window.subtitle" = "为每个应用记住一个输入法，切换过去时自动切回来";
+"window.enable" = "启用";
+"status.current" = "当前输入法：%@";
+"status.ax.granted" = "辅助功能：已授权";
+"status.ax.denied" = "辅助功能：未授权（去系统设置勾选）";
+"status.rules" = "规则 %d 条";
+"status.line" = "%@　·　%@　·　%@";
+"btn.add" = "添加当前应用";
+"btn.refresh" = "刷新";
+"btn.config" = "配置文件";
+"btn.clean" = "清理无效规则";
+"btn.clean.n" = "清理无效规则（%d）";
+"label.learn" = "学习手动切换";
+"checkbox.login" = "开机启动";
+"empty.hint" = "还没有任何规则\n切到某个应用后点下面的「添加当前应用」";
+
+/* 规则行 */
+"row.none" = "不设置";
+"row.missing" = " · 未安装";
+
+/* 弹窗 */
+"alert.clean.title" = "清理 %d 条无效规则？";
+"alert.clean.body" = "这些应用在本机找不到，规则永远不会生效。";
+"alert.clean.ok" = "清理";
+"alert.cancel" = "取消";
+
+/* 小面板 */
+"panel.app" = "该应用";
+"panel.unknown" = "未知应用";
+"panel.settings" = "打开设置…";
+"panel.quit" = "退出";

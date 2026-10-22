@@ -1,0 +1,72 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build .app
+    runs-on: macos-14
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 环境信息
+        run: |
+          sw_vers
+          swift --version
+
+      - name: 构建
+        run: ./build.sh
+
+      - name: 打包
+        id: pack
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="dev-${GITHUB_SHA::7}"
+          fi
+          NAME="AutoSwitchInput-${VERSION}-macos-universal"
+          mkdir -p out
+          # ditto 能保住 bundle 里的元数据，比 zip -r 稳
+          ditto -c -k --sequesterRsrc --keepParent dist/AutoSwitchInput.app "out/${NAME}.zip"
+          shasum -a 256 "out/${NAME}.zip" | tee "out/${NAME}.zip.sha256"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          ls -la out
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack.outputs.name }}
+          path: out/*
+          if-no-files-found: error
+
+      - name: 发布 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: AutoSwitchInput ${{ steps.pack.outputs.version }}
+          body: |
+            macOS 菜单栏小工具：为每个应用记住一个输入法，切过去时自动切回来。
+
+            ### 安装
+            1. 下载下面的 zip 并解压
+            2. 把 `AutoSwitchInput.app` 拖进 `/Applications`
+            3. 首次打开前执行（临时签名，未做公证）：
+               ```bash
+               xattr -dr com.apple.quarantine /Applications/AutoSwitchInput.app
+               ```
+
+            需要 macOS 12 或更高版本，通用二进制（Apple Silicon / Intel）。
+          files: out/*
+          generate_release_notes: true

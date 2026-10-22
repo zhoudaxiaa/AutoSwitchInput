@@ -1,0 +1,3 @@
+/* 中文应用名 */
+CFBundleDisplayName = "自动切换输入法";
+CFBundleName = "自动切换输入法";

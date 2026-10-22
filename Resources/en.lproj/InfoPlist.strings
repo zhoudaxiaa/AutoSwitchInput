@@ -1,0 +1,3 @@
+/* English bundle name */
+CFBundleDisplayName = "Auto Switch Input";
+CFBundleName = "Auto Switch Input";
