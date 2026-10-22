@@ -34,25 +34,48 @@
 - **中英双语** —— 跟随系统，也可以在设置里手动切成「简体中文 / English」，即时生效不用重启
 - 无 Dock 图标、无常驻内存泄漏、不联网
 
-## 应用内细分（VS Code / Cursor 这类编辑器）
+## 应用内细分（同一个 App 里按位置区分）
 
-一个应用里往往有好几种输入场景：VS Code 的终端和代码区该用英文，Copilot / Cursor 的 AI 聊天框该用中文。这个版本可以做到。
+一个应用里往往有好几种输入场景：VS Code 的终端和代码区该用英文，AI 聊天框该用中文。这个版本可以做到，而且**不用先手动切输入法**——光标停在哪儿，就在面板里给那儿指定一个。
 
-**怎么配**：右键点菜单栏图标 → 在 VS Code / Cursor / Windsurf 里会看到 **「套用编辑器预设」**，点一下就配好了：
+**怎么配**（以 VS Code 为例）：
 
-| 位置 | 判定依据 | 输入法 |
-| --- | --- | --- |
-| 终端 | `AXDOMClassList` 含 `xterm-helper-textarea` | 英文（ABC） |
-| 编辑器 | `AXDOMClassList` 含 `native-edit-context` | 英文（ABC） |
-| AI 聊天输入框 | `AXDOMClassList` 含 `ProseMirror` | 中文输入法 |
+1. 把光标点进终端
+2. 左键点菜单栏图标 → 面板里出现 **「此处 · 终端」** → 选 **ABC**
+3. 把光标点进 AI 聊天框，再点图标 → 这一行变成 **「此处 · 对话」** → 选 **搜狗拼音**
 
-其他应用可以自己教：把光标点进目标位置 → 右键菜单 → **「记住这个位置用「当前输入法」」**。它会自动挑最窄的匹配条件（优先用 DOM class，其次 identifier，最后才退到 role + 标题关键词），所以不会一条规则把整个应用吃满。
+这样两条规则各自只认自己那个位置。右键菜单里也有同一项：**「此处（终端）单独用…」**。
 
-**为什么用 `AXDOMClassList`**：Electron 应用的 `AXIdentifier` 通常是空的，标题又是本地化的（中文版 VS Code 的终端标题是「终端 1，zsh 运行命令」），拿标题匹配换个语言或升个版本就废了。`AXDOMClassList` 是 Chromium 暴露的非标准属性，跟语言和版本都无关，稳得多。
+面板长这样：
 
-**优先级**：应用内细分规则 > 应用规则 > 默认输入法。没匹配上的位置（比如侧边栏、搜索框）会回落到该应用的应用级规则。
+```
+Code
+com.microsoft.VSCode
+当前输入法：搜狗拼音
+────────────────────────
+该应用      [ 搜狗拼音  ▾ ]
+此处 · 终端 [ ABC       ▾ ]
+────────────────────────
+```
 
-> 这个功能需要辅助功能权限（要读焦点元素）。没授权时整块跳过，行为和以前一样。
+「此处」那一行显示的就是**点图标那一刻光标所在的位置**。选「跟随应用」就是删掉这个位置的规则，回到「该应用」的设置。
+
+**判定依据**：Electron 应用（VS Code / Cursor / Windsurf / 各种 Chromium 客户端）会把网页元素的 class 暴露成 `AXDOMClassList`，这是跟语言、跟版本都无关的稳定标识：
+
+| 常见位置 | `AXDOMClassList` 里的标识 |
+| --- | --- |
+| VS Code 终端 | `xterm-helper-textarea` |
+| VS Code 编辑器 | `native-edit-context` |
+| AI 聊天输入框（Copilot / Codex / Cursor Chat） | `ProseMirror` |
+
+`AXIdentifier` 通常是空的，标题又是本地化的（中文版 VS Code 的终端标题是「终端 1，zsh 运行命令」），拿标题匹配换个语言或升个版本就废了——所以优先用 DOM class。
+
+**为什么不再写 `role`**：`AXRole` 会随 Electron 版本漂移（同一个输入框这版是 `AXTextField`、下版可能变），把它写进规则只是多一个失效点。现在**只要有 DOM class 就只认 DOM class**，role 只在实在没有 class 时才用。
+
+**优先级**：此处规则 > 该应用的规则 > 默认输入法。没匹配上的位置（侧边栏、搜索框、文件树）会回落到应用级规则。
+
+> 需要辅助功能权限（要读焦点元素）。没授权时这一行显示「需辅助功能权限」，其余行为不变。
+
 
 ## 安装
 
@@ -237,11 +260,26 @@ Optional for basic use. App-switching triggers work through `NSWorkspace` notifi
 
 ### Per-spot rules
 
-Right-click the menu bar icon inside VS Code / Cursor / Windsurf and pick **“Apply Editor Preset”**: English for the terminal and editor, your Chinese IME for the AI chat panel.
+Same app, different spots, different input sources — no need to switch manually first.
 
-For any other app, focus the target spot and pick **“Remember This Spot as …”** — it picks the narrowest matching condition automatically (DOM class first, then identifier, then role + title keyword).
+1. Click into the VS Code terminal
+2. Left-click the menu bar icon — the panel shows **“Here · Terminal”** — pick **ABC**
+3. Click into the AI chat box, click the icon again — it now reads **“Here · Chat”** — pick your Chinese IME
 
-The discriminator is `AXDOMClassList`, a non-standard attribute Chromium exposes: Electron apps leave `AXIdentifier` empty and their titles are localized, so class names are the only stable signal across languages and versions.
+Each rule only matches its own spot. The same item is available in the right-click menu as **“This Spot (Terminal) Uses…”**. Choosing **“Follow app”** deletes the rule for that spot and falls back to the per-app setting.
+
+The discriminator is `AXDOMClassList`, a non-standard attribute Chromium exposes:
+
+| Spot | `AXDOMClassList` marker |
+| --- | --- |
+| VS Code terminal | `xterm-helper-textarea` |
+| VS Code editor | `native-edit-context` |
+| AI chat box (Copilot / Codex / Cursor Chat) | `ProseMirror` |
+
+Electron apps leave `AXIdentifier` empty and their titles are localized, so title matching breaks on a language or version change. `AXRole` also drifts between Electron releases — so once a DOM class matches, **the class alone decides**; `role` is only used when no class is available.
+
+**Priority**: spot rule > app rule > default source. Unmatched spots (sidebar, search box, file tree) fall back to the app rule.
+
 
 > After rebuilding the app locally, macOS invalidates the accessibility grant unless the binary is signed with a stable identity. `build.sh` uses a self-signed `AutoSwitchInput Local` certificate when available for exactly this reason.
 

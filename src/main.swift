@@ -838,6 +838,12 @@ final class QuickPanelController: NSViewController {
     private let enabledSwitch = NSSwitch()
     private let rulePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private var currentBundle: String?
+    /// 「此处」那一行
+    private let spotLabel = NSTextField(labelWithString: "")
+    private let spotPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private var currentFingerprint: FocusFingerprint?
+    /// 截图预览用：伪造一个焦点指纹（正常运行时永远是 nil）
+    var demoFingerprint: FocusFingerprint?
 
     private let panelWidth: CGFloat = 300
     private var contentWidth: CGFloat { panelWidth - 28 }
@@ -895,6 +901,23 @@ final class QuickPanelController: NSViewController {
         ruleRow.spacing = 8
         ruleRow.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
 
+        // 「此处」：只给当前焦点所在的位置单独指定输入法
+        spotLabel.font = .systemFont(ofSize: 12)
+        spotLabel.lineBreakMode = .byTruncatingTail
+        spotLabel.setContentHuggingPriority(.required, for: .horizontal)
+        spotLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        spotPopup.font = .systemFont(ofSize: 12)
+        spotPopup.target = self
+        spotPopup.action = #selector(spotChanged)
+        spotPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let spotRow = NSStackView(views: [spotLabel, spotPopup])
+        spotRow.orientation = .horizontal
+        spotRow.alignment = .centerY
+        spotRow.spacing = 8
+        spotRow.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
+
         let openBtn = NSButton(title: L("panel.settings"), target: self, action: #selector(openSettings))
         openBtn.bezelStyle = .rounded
         openBtn.controlSize = .small
@@ -926,7 +949,7 @@ final class QuickPanelController: NSViewController {
         sep2.translatesAutoresizingMaskIntoConstraints = false
         sep2.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
 
-        let stack = NSStackView(views: [header, currentLabel, sep1, ruleRow, sep2, buttons])
+        let stack = NSStackView(views: [header, currentLabel, sep1, ruleRow, spotRow, sep2, buttons])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
@@ -984,10 +1007,59 @@ final class QuickPanelController: NSViewController {
 
         rulePopup.isEnabled = (bundle != nil && bundle != kBundleSelf)
 
+        refreshSpot(bundle: bundle)
+
         // 尺寸随内容自适应
         view.layoutSubtreeIfNeeded()
         let h = view.fittingSize.height
         preferredContentSize = NSSize(width: panelWidth, height: h)
+    }
+
+    /// 「此处」那一行：把此刻焦点所在的位置单独指一个输入法
+    private func refreshSpot(bundle: String?) {
+        spotPopup.removeAllItems()
+
+        // 只有拿到焦点元素才知道「此处」是哪儿
+        var fp: FocusFingerprint?
+        if let b = bundle, b != kBundleSelf {
+            if let running = NSRunningApplication.runningApplications(withBundleIdentifier: b).first {
+                fp = focusedFingerprint(pid: running.processIdentifier)
+            }
+        }
+        // 截图预览用：前台是本进程，读不到目标应用的焦点元素
+        if fp == nil { fp = demoFingerprint }
+        currentFingerprint = fp
+
+        guard let b = bundle, b != kBundleSelf, let fp = fp, let app = app else {
+            spotLabel.stringValue = LF("panel.spot", L("spot.unknown"))
+            spotLabel.textColor = .tertiaryLabelColor
+            spotPopup.addItem(withTitle: AXIsProcessTrusted()
+                              ? L("spot.na") : L("spot.needAX"))
+            spotPopup.lastItem?.representedObject = nil
+            spotPopup.selectItem(at: 0)
+            spotPopup.isEnabled = false
+            return
+        }
+
+        spotLabel.textColor = .labelColor
+        spotLabel.stringValue = LF("panel.spot", app.spotLabel(fp, bundle: b))
+
+        spotPopup.addItem(withTitle: L("spot.follow"))
+        spotPopup.lastItem?.representedObject = nil
+        for s in typeableSources() {
+            spotPopup.addItem(withTitle: s.name)
+            spotPopup.lastItem?.representedObject = s.id
+        }
+
+        if let rule = app.matchedContextRule(bundle: b, fp: fp),
+           let idx = spotPopup.itemArray.firstIndex(where: {
+               ($0.representedObject as? String) == rule.source
+           }) {
+            spotPopup.selectItem(at: idx)
+        } else {
+            spotPopup.selectItem(at: 0)
+        }
+        spotPopup.isEnabled = true
     }
 
     /// 只更新"当前输入法"那一行，避免面板打开时重置用户的选项
@@ -1006,6 +1078,14 @@ final class QuickPanelController: NSViewController {
         app.saveConfig()
         app.reloadSettingsWindow()
         log("✎ 小面板设置 \(b) → \(rulePopup.selectedItem?.representedObject as? String ?? "不设置")")
+    }
+
+    /// 在面板里给「此刻焦点所在的位置」指定输入法
+    @objc private func spotChanged() {
+        guard let app = app, let b = currentBundle, b != kBundleSelf,
+              let fp = currentFingerprint else { return }
+        let id = spotPopup.selectedItem?.representedObject as? String
+        app.setSpotRule(bundle: b, source: id, fp: fp)
     }
 
     @objc private func toggleEnabled() {
@@ -1046,6 +1126,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     /// 菜单打开那一刻的前台应用 —— 菜单弹出后再问「前台」可能已经不是它了
     var menuFrontPID: pid_t = 0
     var menuFrontBundle: String?
+
+    /// 菜单里「当前位置」子菜单对应的焦点与所属应用
+    var pendingSpotFP: FocusFingerprint?
+    var pendingSpotBundle: String?
 
     var popover: NSPopover?
     var quickPanel: QuickPanelController?
@@ -1118,6 +1202,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         panel.app = self
         // 截图时固定展示某个应用，避免抓到的正好是当前前台的小工具
         if let b = demoBundle { lastExternalBundle = b }
+        // 截图时前台是本进程，读不到目标应用的焦点元素，
+        // 用 AUTOSWITCH_DEMO_SPOT 伪造一个指纹来预览「此处」这一行
+        if let raw = ProcessInfo.processInfo.environment["AUTOSWITCH_DEMO_SPOT"], !raw.isEmpty {
+            var fp = FocusFingerprint()
+            fp.role = "AXTextField"
+            fp.domClasses = raw.split(separator: ",").map(String.init)
+            panel.demoFingerprint = fp
+        }
         let v = panel.view
         panel.refresh()
         v.layoutSubtreeIfNeeded()
@@ -1515,20 +1607,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         clear.isEnabled = config.apps[bundle] != nil
         menu.addItem(clear)
 
-        // 应用内细分：把当前这个位置单独记成一条规则
-        let remember = NSMenuItem(title: LF("menu.rememberFocus", currentSourceName()),
-                                  action: #selector(rememberFocus), keyEquivalent: "")
-        remember.target = self
-        remember.isEnabled = front != nil && bundle != kBundleSelf && AXIsProcessTrusted()
-        menu.addItem(remember)
+        // 当前位置：直接选输入法，不用先手动切
+        if AXIsProcessTrusted(), let target = externalTarget(),
+           let fp = focusedFingerprint(pid: target.pid) {
+            pendingSpotFP = fp
+            pendingSpotBundle = target.bundle
 
-        // 编辑器/IDE：一键套用「终端+编辑器英文、AI 聊天中文」预设
-        if isEditorBundle(bundle) {
-            let preset = NSMenuItem(title: L("menu.editorPreset"),
-                                    action: #selector(applyEditorPresetNow), keyEquivalent: "")
-            preset.target = self
-            preset.isEnabled = AXIsProcessTrusted()
-            menu.addItem(preset)
+            let label = spotLabel(fp, bundle: target.bundle)
+            let current = matchedContextRule(bundle: target.bundle, fp: fp)?.source
+
+            let spotMenu = NSMenu()
+            let noneItem = NSMenuItem(title: L("menu.spot.none"),
+                                      action: #selector(setSpotNone), keyEquivalent: "")
+            noneItem.target = self
+            noneItem.state = current == nil ? .on : .off
+            spotMenu.addItem(noneItem)
+            spotMenu.addItem(.separator())
+
+            for s in typeableSources() {
+                let item = NSMenuItem(title: s.name, action: #selector(setSpotSource(_:)),
+                                      keyEquivalent: "")
+                item.target = self
+                item.representedObject = s.id
+                item.state = (current == s.id) ? .on : .off
+                spotMenu.addItem(item)
+            }
+
+            let spotParent = NSMenuItem(title: LF("menu.spot", label), action: nil, keyEquivalent: "")
+            spotParent.submenu = spotMenu
+            menu.addItem(spotParent)
         }
 
         let ctxCount = config.contexts.filter { $0.bundle == bundle }.count
@@ -1627,6 +1734,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     @objc func clearContexts() {
         guard let bundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return }
         clearContextRules(for: bundle)
+    }
+
+    @objc func setSpotSource(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let fp = pendingSpotFP, let bundle = pendingSpotBundle else { return }
+        setSpotRule(bundle: bundle, source: id, fp: fp)
+    }
+
+    @objc func setSpotNone() {
+        guard let fp = pendingSpotFP, let bundle = pendingSpotBundle else { return }
+        setSpotRule(bundle: bundle, source: nil, fp: fp)
     }
 
     /// 诊断：把「此刻的焦点特征」追加到 ax-focus.txt，方便边点边记
@@ -1786,11 +1904,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     }
 
     private func contextMatches(_ r: ContextRule, _ fp: FocusFingerprint) -> Bool {
-        if let role = r.role, !role.isEmpty, fp.role != role { return false }
-        if let c = r.classContains, !c.isEmpty {
-            let hit = fp.domClasses.contains { $0.localizedCaseInsensitiveContains(c) }
-            if !hit { return false }
+        // 条件全空的规则等于匹配一切，直接忽略，免得一条空规则吃满整个应用
+        if r.role == nil && r.identifier == nil && r.titleContains == nil && r.classContains == nil {
+            return false
         }
+
+        // 有 DOM class 就以它为准。role 会随 Electron / VS Code 版本漂移，
+        // 让它一起参与判断只会把本来能命中的规则否掉（之前「全是 ABC」就是这么来的）。
+        if let c = r.classContains, !c.isEmpty {
+            return fp.domClasses.contains { $0.localizedCaseInsensitiveContains(c) }
+        }
+
+        if let role = r.role, !role.isEmpty, fp.role != role { return false }
         if let id = r.identifier, !id.isEmpty {
             let hit = fp.identifier.localizedCaseInsensitiveContains(id)
                 || fp.ancestorIDs.contains { $0.localizedCaseInsensitiveContains(id) }
@@ -1800,72 +1925,109 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
             let hay = ([fp.title, fp.placeholder] + fp.ancestorTitles).joined(separator: "\u{1F}")
             if !hay.localizedCaseInsensitiveContains(t) { return false }
         }
-        // 条件全空的规则等于匹配一切，直接忽略，免得一条空规则吃满整个应用
-        if r.role == nil && r.identifier == nil && r.titleContains == nil && r.classContains == nil {
-            return false
-        }
         return true
     }
 
     /// 当前焦点位置有没有更细的规则
     func contextSource(bundle: String) -> String? {
-        let rules = config.contexts.enumerated().filter { $0.element.bundle == bundle }
-        guard !rules.isEmpty else { return nil }
+        guard config.contexts.contains(where: { $0.bundle == bundle }) else { return nil }
         guard let front = NSWorkspace.shared.frontmostApplication,
               front.bundleIdentifier == bundle else { return nil }
         guard let fp = focusedFingerprint(pid: front.processIdentifier) else { return nil }
+        return matchedContextRule(bundle: bundle, fp: fp)?.source
+    }
 
-        // 越具体越先匹配；同分时保持配置里的先后顺序
-        let ordered = rules.sorted {
-            let a = specificity($0.element), b = specificity($1.element)
-            return a == b ? $0.offset < $1.offset : a > b
+    /// 当前应该操作的外部应用（排除自己）
+    func externalTarget() -> (bundle: String, pid: pid_t)? {
+        if let f = NSWorkspace.shared.frontmostApplication,
+           let b = f.bundleIdentifier, b != kBundleSelf {
+            return (b, f.processIdentifier)
         }
-        for (_, r) in ordered where contextMatches(r, fp) {
-            return r.source
+        if let b = lastExternalBundle,
+           let running = NSRunningApplication.runningApplications(withBundleIdentifier: b).first {
+            return (b, running.processIdentifier)
         }
         return nil
     }
 
-    /// 把「当前焦点 + 当前输入法」记成一条细分规则
-    @objc func rememberFocus() {
-        guard let front = NSWorkspace.shared.frontmostApplication,
-              let bundle = front.bundleIdentifier, bundle != kBundleSelf else { return }
-        guard let fp = focusedFingerprint(pid: front.processIdentifier) else {
-            log("记住焦点失败：拿不到焦点元素（多半是未授权辅助功能）")
-            showAlert(L("alert.ax.title"), L("alert.ax.body"))
-            return
+    /// 给用户看的位置名称：优先按 DOM class 猜（跟着语言走），其次用规则备注
+    func spotLabel(_ fp: FocusFingerprint, bundle: String) -> String {
+        for c in fp.domClasses {
+            if c.localizedCaseInsensitiveContains("xterm") { return L("spot.terminal") }
+            if c.localizedCaseInsensitiveContains("ProseMirror") { return L("spot.chat") }
+            if c.localizedCaseInsensitiveContains("native-edit-context") { return L("spot.editor") }
         }
-        guard let cur = currentSourceID() else { return }
+        if let rule = matchedContextRule(bundle: bundle, fp: fp), let note = rule.note, !note.isEmpty {
+            return note
+        }
+        if let c = fp.domClasses.first { return c }
+        if !fp.identifier.isEmpty { return fp.identifier }
+        return fp.role.isEmpty ? L("spot.unknown") : fp.role
+    }
 
-        // 尽量用最窄的条件：DOM class 最稳，其次 identifier，最后退到 role + 标题词
-        var rule = ContextRule(bundle: bundle, source: cur)
+    /// 当前焦点命中的细分规则（没有则 nil）
+    func matchedContextRule(bundle: String, fp: FocusFingerprint) -> ContextRule? {
+        let rules = config.contexts.enumerated().filter { $0.element.bundle == bundle }
+        guard !rules.isEmpty else { return nil }
+        let ordered = rules.sorted {
+            let a = specificity($0.element), b = specificity($1.element)
+            return a == b ? $0.offset < $1.offset : a > b
+        }
+        return ordered.first { contextMatches($0.element, fp) }?.element
+    }
+
+    /// 用当前焦点生成一条「尽量窄但别太脆」的规则。
+    /// DOM class / identifier 已经能唯一确定位置，就不再加 role ——
+    /// role 会因为 Electron 版本变化而漂移，多写一个条件只是多一个失效点。
+    func makeContextRule(bundle: String, source: String, fp: FocusFingerprint) -> ContextRule {
+        var rule = ContextRule(bundle: bundle, source: source)
         if let cls = fp.domClasses.first(where: { !$0.isEmpty && $0.count <= 60 }) {
             rule.classContains = cls
-            if !fp.role.isEmpty { rule.role = fp.role }
         } else if !fp.identifier.isEmpty {
             rule.identifier = fp.identifier
-            if !fp.role.isEmpty { rule.role = fp.role }
         } else {
             rule.role = fp.role
             if let t = fp.ancestorTitles.first(where: { !$0.isEmpty && $0.count <= 40 }) {
                 rule.titleContains = t
             }
         }
-        rule.note = rule.classContains ?? rule.identifier ?? rule.titleContains ?? fp.role
+        rule.note = spotLabel(fp, bundle: bundle)
+        return rule
+    }
 
-        // 同条件的旧规则直接覆盖，避免越点越多
-        config.contexts.removeAll {
-            $0.bundle == rule.bundle && $0.identifier == rule.identifier
-                && $0.role == rule.role && $0.titleContains == rule.titleContains
-                && $0.classContains == rule.classContains
+    /// 规则「指向哪个位置」的归一化标识：以最能区分位置的那个条件为准
+    private func spotKey(_ r: ContextRule) -> String {
+        if let c = r.classContains, !c.isEmpty { return "class:" + c.lowercased() }
+        if let i = r.identifier, !i.isEmpty { return "id:" + i.lowercased() }
+        return "role:\(r.role ?? "")|\(r.titleContains ?? "")"
+    }
+
+    private func sameSpot(_ a: ContextRule, _ b: ContextRule) -> Bool {
+        spotKey(a) == spotKey(b)
+    }
+
+    /// 给「当前位置」指定输入法（source 传 nil 表示清除该位置的规则）
+    func setSpotRule(bundle: String, source: String?, fp: FocusFingerprint) {
+        let probe = makeContextRule(bundle: bundle, source: source ?? "", fp: fp)
+        config.contexts.removeAll { $0.bundle == bundle && sameSpot($0, probe) }
+
+        if let source = source {
+            var rule = probe
+            rule.source = source
+            config.contexts.append(rule)
+            log("✎ 位置规则 \(bundle) [\(rule.note ?? "-")] → \(source)")
+        } else {
+            log("✎ 清除位置规则 \(bundle) [\(probe.note ?? "-")]")
         }
-        config.contexts.append(rule)
-        saveConfig()
 
-        log("✎ 细分规则 +1 \(bundle) → \(cur) [\(rule.note ?? "-")] \(fp.summary)")
+        saveConfig()
         refreshStatusTitle()
         settings.reload()
-        if popover?.isShown == true { quickPanel?.refresh() }
+        // 面板是从下拉菜单里点出来的，先让菜单收起再重建，避免销毁正在派发事件的那个控件
+        if popover?.isShown == true {
+            DispatchQueue.main.async { [weak self] in self?.quickPanel?.refresh() }
+        }
+        scheduleApply(reason: "位置规则变更")
     }
 
     /// 清掉某个应用的全部细分规则
@@ -1877,74 +2039,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         log("✎ 清除细分规则 \(bundle) ×\(n)")
         settings.reload()
         if popover?.isShown == true { quickPanel?.refresh() }
-    }
-
-    // MARK: 编辑器预设
-
-    /// 这些编辑器/IDE 的 DOM class 比较稳定，可以套用预设
-    static let editorPresetBundles = [
-        "com.microsoft.VSCode",
-        "com.todesktop.230313mzl4w4u92",   // Cursor
-        "com.exafunction.windsurf",
-        "com.visualstudio.code.oss",
-    ]
-
-    func isEditorBundle(_ b: String) -> Bool {
-        AppDelegate.editorPresetBundles.contains(b)
-    }
-
-    /// 英文输入法（一般是 ABC）
-    func englishSourceID() -> String? {
-        let srcs = typeableSources()
-        if let s = srcs.first(where: { $0.id == "com.apple.keylayout.ABC" }) { return s.id }
-        if let s = srcs.first(where: { $0.id.lowercased().contains("abc") }) { return s.id }
-        return srcs.first(where: { $0.id.contains("keylayout") })?.id
-    }
-
-    /// 中文输入法：优先用这个应用已有的规则，否则取第一个第三方输入法
-    func chineseSourceID(preferring bundle: String) -> String? {
-        let srcs = typeableSources()
-        let en = englishSourceID()
-        if let cur = config.apps[bundle], cur != en, srcs.contains(where: { $0.id == cur }) {
-            return cur
-        }
-        return srcs.first(where: { $0.id.contains("inputmethod") })?.id
-    }
-
-    /// 终端 / 编辑器用英文，AI 聊天面板用中文
-    func applyEditorPreset(for bundle: String) {
-        guard let en = englishSourceID() else {
-            showAlert(L("alert.preset.title"), L("alert.preset.body"))
-            return
-        }
-        guard let zh = chineseSourceID(preferring: bundle) else {
-            showAlert(L("alert.preset.title"), L("alert.preset.body"))
-            return
-        }
-
-        config.contexts.removeAll { $0.bundle == bundle }
-        config.contexts.append(ContextRule(
-            bundle: bundle, source: en, role: "AXTextField",
-            classContains: "xterm-helper-textarea", note: L("preset.terminal")))
-        config.contexts.append(ContextRule(
-            bundle: bundle, source: en, role: "AXTextArea",
-            classContains: "native-edit-context", note: L("preset.editor")))
-        config.contexts.append(ContextRule(
-            bundle: bundle, source: zh, role: "AXTextArea",
-            classContains: "ProseMirror", note: L("preset.chat")))
-        saveConfig()
-
-        log("✎ 套用编辑器预设 \(bundle)：终端/编辑器 → \(en)，聊天 → \(zh)")
-        refreshStatusTitle()
-        settings.reload()
-        if popover?.isShown == true { quickPanel?.refresh() }
-        scheduleApply(reason: "套用预设")
-    }
-
-    @objc func applyEditorPresetNow() {
-        guard let bundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
-              bundle != kBundleSelf else { return }
-        applyEditorPreset(for: bundle)
     }
 
     /// 诊断：把焦点元素的 AX 特征写成文本，用来配细分规则

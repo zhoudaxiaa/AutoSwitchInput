@@ -6,7 +6,8 @@
 "menu.settings" = "Open Settings…";
 "menu.assign" = "Use “%@” for This App";
 "menu.clear" = "Clear Rule for This App";
-"menu.rememberFocus" = "Remember This Spot as “%@”";
+"menu.spot" = "This Spot (%@) Uses…";
+"menu.spot.none" = "Don’t Set (Follow the App)";
 "menu.contexts" = "Spot Rules (%d)";
 "menu.axdump" = "Diagnostics: Dump Focus Fingerprint";
 "menu.clearContexts" = "Clear Spot Rules for This App";
@@ -50,19 +51,19 @@
 "alert.clean.ok" = "Remove";
 "alert.cancel" = "Cancel";
 "alert.ok" = "OK";
-"alert.ax.title" = "Accessibility Permission Needed";
-"alert.ax.body" = "Recognizing a specific spot inside an app (say the terminal vs. the editor in VS Code) requires reading the focused element.\n\nOpen System Settings → Privacy & Security → Accessibility, tick “Auto Switch Input”, then relaunch the app.";
 
 /* Quick panel */
 "panel.app" = "This app";
+"panel.spot" = "Here · %@";
 "panel.unknown" = "Unknown app";
 "panel.settings" = "Open Settings…";
 "panel.quit" = "Quit";
 
-/* 应用内细分 / 预设 */
-"menu.editorPreset" = "Apply Editor Preset (English for code/terminal, Chinese for AI chat)";
-"preset.terminal" = "Terminal";
-"preset.editor" = "Editor";
-"preset.chat" = "AI Chat";
-"alert.preset.title" = "Cannot Apply Preset";
-"alert.preset.body" = "No usable English/Chinese input source found. Enable at least one English layout and one Chinese IME in System Settings first.";
+/* Spot rules */
+"spot.follow" = "Follow app";
+"spot.terminal" = "Terminal";
+"spot.editor" = "Editor";
+"spot.chat" = "Chat";
+"spot.unknown" = "Unrecognized";
+"spot.na" = "Unavailable";
+"spot.needAX" = "Needs Accessibility";
