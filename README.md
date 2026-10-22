@@ -1,5 +1,10 @@
 # Auto Switch Input · 自动切换输入法
 
+[![Build](https://github.com/zhoudaxiaa/AutoSwitchInput/actions/workflows/build.yml/badge.svg)](https://github.com/zhoudaxiaa/AutoSwitchInput/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/zhoudaxiaa/AutoSwitchInput)](https://github.com/zhoudaxiaa/AutoSwitchInput/releases)
+[![Platform](https://img.shields.io/badge/macOS-12%2B-blue)](https://github.com/zhoudaxiaa/AutoSwitchInput)
+[![License](https://img.shields.io/github/license/zhoudaxiaa/AutoSwitchInput)](LICENSE)
+
 一个轻量的 macOS 菜单栏小工具：**为每个应用记住一个输入法，切过去时自动切回来。**
 
 写它的原因很简单 —— 市面上同类工具经常"用着用着就不灵了"。这个版本把重点全放在**稳定性**上：多路触发、切换后校验、看门狗兜底，并且刻意不去缓存任何 `TISInputSource` 引用。
