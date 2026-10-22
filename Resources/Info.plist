@@ -6,8 +6,6 @@
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
 	<string>Auto Switch Input</string>
-	<key>CFBundleName</key>
-	<string>AutoSwitchInput</string>
 	<key>CFBundleExecutable</key>
 	<string>AutoSwitchInput</string>
 	<key>CFBundleIconFile</key>
@@ -21,12 +19,14 @@
 		<string>en</string>
 		<string>zh-Hans</string>
 	</array>
+	<key>CFBundleName</key>
+	<string>AutoSwitchInput</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.0</string>
+	<string>1.1.0</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>2</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>12.0</string>
 	<key>LSUIElement</key>

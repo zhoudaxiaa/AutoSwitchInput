@@ -30,7 +30,7 @@
 - **看门狗** —— 每秒自检一次，被别的程序抢走输入法会自己纠回来
 - **无效规则清理** —— 应用卸载后残留的规则可以一键清掉
 - **开机自启** —— 一个开关搞定
-- **中英双语** —— 跟随系统语言，也可用 `-AppleLanguages` 强制指定
+- **中英双语** —— 跟随系统，也可以在设置里手动切成「简体中文 / English」，即时生效不用重启
 - 无 Dock 图标、无常驻内存泄漏、不联网
 
 ## 安装
@@ -70,6 +70,8 @@ open dist/AutoSwitchInput.app
 
 之后每次切到那个应用，输入法会自动跟着变。
 
+底部第二行是几个全局设置，从左到右依次是 **语言**（跟随系统 / 简体中文 / English）、**学习手动切换**、**开机启动**。语言切换是即时生效的，窗口会原地重建一次，不需要重启 App。
+
 ### 关于辅助功能权限
 
 **不是必须的。** 不授权也能正常用 —— 应用切换触发走的是 `NSWorkspace` 通知，不需要任何权限。
@@ -99,9 +101,12 @@ open dist/AutoSwitchInput.app
   },
   "excluded": ["com.apple.SecurityAgent"],
   "verifyDelays": [0.06, 0.18, 0.45],
-  "watchdogInterval": 1.5
+  "watchdogInterval": 1.5,
+  "language": null
 }
 ```
+
+`language` 可选 `null`（跟随系统）、`"zh-Hans"`、`"en"`。
 
 写入前会自动备份一份 `config.json.bak`，读取失败时自动回退到备份。
 
@@ -172,7 +177,7 @@ Most similar tools break after a while. This one is built around stability: thre
 - Watchdog corrects the input source if something steals it
 - Cleanup of rules pointing at uninstalled apps
 - Launch at login
-- English / Simplified Chinese UI
+- English / Simplified Chinese UI, switchable in Settings (applies instantly, no restart)
 
 ### Install
 

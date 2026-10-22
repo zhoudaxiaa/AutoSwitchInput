@@ -31,6 +31,8 @@
 "btn.clean" = "清理无效规则";
 "btn.clean.n" = "清理无效规则（%d）";
 "label.learn" = "学习手动切换";
+"label.language" = "语言";
+"lang.system" = "跟随系统";
 "checkbox.login" = "开机启动";
 "empty.hint" = "还没有任何规则\n切到某个应用后点下面的「添加当前应用」";
 

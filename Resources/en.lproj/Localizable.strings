@@ -31,6 +31,8 @@
 "btn.clean" = "Remove Invalid";
 "btn.clean.n" = "Remove Invalid (%d)";
 "label.learn" = "Learn manual switches";
+"label.language" = "Language";
+"lang.system" = "System";
 "checkbox.login" = "Launch at login";
 "empty.hint" = "No rules yet\nSwitch to an app, then click “Add Frontmost App”";
 

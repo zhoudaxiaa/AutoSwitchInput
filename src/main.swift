@@ -174,6 +174,8 @@ struct Config: Codable {
     ]
     var verifyDelays: [Double] = [0.06, 0.18, 0.45]
     var watchdogInterval: Double = 1.5
+    /// 界面语言："zh-Hans" / "en"，nil = 跟随系统
+    var language: String? = nil
 
     init() {}
 
@@ -189,6 +191,7 @@ struct Config: Codable {
         excluded = try c.decodeIfPresent([String].self, forKey: .excluded) ?? d.excluded
         verifyDelays = try c.decodeIfPresent([Double].self, forKey: .verifyDelays) ?? d.verifyDelays
         watchdogInterval = try c.decodeIfPresent(Double.self, forKey: .watchdogInterval) ?? d.watchdogInterval
+        language = try c.decodeIfPresent(String.self, forKey: .language)
     }
 }
 
@@ -202,6 +205,11 @@ let supportDir: URL = {
 let configURL = supportDir.appendingPathComponent("config.json")
 
 // MARK: - 设置窗口
+
+/// 翻转坐标系的容器，让滚动内容从顶部开始排
+final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+}
 
 final class RuleRow: NSView {
     let bundleID: String
@@ -311,6 +319,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var enabledSwitch: NSSwitch!
     private var learnSwitch: NSSwitch!
     private var loginCheck: NSButton!
+    private var languagePopup: NSPopUpButton!
     private var statusLabel: NSTextField!
     private var emptyLabel: NSTextField!
     private var cleanBtn: NSButton!
@@ -327,14 +336,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     private func build() {
         let w = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 540),
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 588),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false)
         w.title = L("app.name")
         w.center()
         w.isReleasedWhenClosed = false
         w.delegate = self
-        w.minSize = NSSize(width: 560, height: 420)
+        w.minSize = NSSize(width: 560, height: 470)
 
         let content = NSView()
 
@@ -381,11 +390,21 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         scroll.borderType = .noBorder
-        scroll.documentView = listStack
+        // 文档视图必须是翻转的，否则规则少于可视高度时会沉到列表底部
+        let doc = FlippedView()
+        doc.translatesAutoresizingMaskIntoConstraints = false
+        doc.addSubview(listStack)
+        scroll.documentView = doc
         NSLayoutConstraint.activate([
-            listStack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
-            listStack.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
-            listStack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            doc.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            doc.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
+            doc.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+
+            listStack.topAnchor.constraint(equalTo: doc.topAnchor),
+            listStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
+            listStack.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
+            listStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor),
         ])
 
         let box = NSBox()
@@ -429,18 +448,54 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         learnSwitch = NSSwitch()
         learnSwitch.target = self
         learnSwitch.action = #selector(toggleLearn)
+        learnSwitch.controlSize = .small
         let learnLabel = NSTextField(labelWithString: L("label.learn"))
         learnLabel.font = .systemFont(ofSize: 12)
 
-        let bottomRow = NSStackView(views: [
-            addBtn, refreshBtn, configBtn, cleanBtn, NSView(), learnLabel, learnSwitch, loginCheck,
-        ])
-        bottomRow.orientation = .horizontal
-        bottomRow.alignment = .centerY
-        bottomRow.spacing = 10
-        bottomRow.translatesAutoresizingMaskIntoConstraints = false
+        // 语言选择：跟随系统 / 简体中文 / English
+        let langLabel = NSTextField(labelWithString: L("label.language"))
+        langLabel.font = .systemFont(ofSize: 12)
 
-        for v in [topRow, statusLabel, box, bottomRow, emptyLabel] as [NSView] { content.addSubview(v) }
+        languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        languagePopup.font = .systemFont(ofSize: 12)
+        languagePopup.controlSize = .small
+        languagePopup.target = self
+        languagePopup.action = #selector(languageChanged)
+        let langOptions: [(String, String?)] = [
+            (L("lang.system"), nil),
+            ("简体中文", "zh-Hans"),
+            ("English", "en"),
+        ]
+        for (title, code) in langOptions {
+            languagePopup.addItem(withTitle: title)
+            languagePopup.lastItem?.representedObject = code
+        }
+        languagePopup.widthAnchor.constraint(equalToConstant: 116).isActive = true
+
+        // 第一行：动作按钮
+        let actionRow = NSStackView(views: [addBtn, refreshBtn, configBtn, cleanBtn, NSView()])
+        actionRow.orientation = .horizontal
+        actionRow.alignment = .centerY
+        actionRow.spacing = 10
+        actionRow.translatesAutoresizingMaskIntoConstraints = false
+
+        // 分隔线
+        let footerSep = NSBox()
+        footerSep.boxType = .separator
+        footerSep.translatesAutoresizingMaskIntoConstraints = false
+
+        // 第二行：设置项（语言 / 学习 / 开机启动）统一放一排
+        let settingsRow = NSStackView(views: [
+            langLabel, languagePopup, NSView(), learnLabel, learnSwitch, loginCheck,
+        ])
+        settingsRow.orientation = .horizontal
+        settingsRow.alignment = .centerY
+        settingsRow.spacing = 8
+        settingsRow.translatesAutoresizingMaskIntoConstraints = false
+
+        for v in [topRow, statusLabel, box, actionRow, footerSep, settingsRow, emptyLabel] as [NSView] {
+            content.addSubview(v)
+        }
 
         NSLayoutConstraint.activate([
             topRow.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
@@ -454,11 +509,19 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             box.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
             box.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
             box.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 10),
-            box.bottomAnchor.constraint(equalTo: bottomRow.topAnchor, constant: -14),
+            box.bottomAnchor.constraint(equalTo: actionRow.topAnchor, constant: -14),
 
-            bottomRow.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            bottomRow.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-            bottomRow.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
+            actionRow.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            actionRow.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+
+            footerSep.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            footerSep.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            footerSep.topAnchor.constraint(equalTo: actionRow.bottomAnchor, constant: 12),
+
+            settingsRow.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            settingsRow.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            settingsRow.topAnchor.constraint(equalTo: footerSep.bottomAnchor, constant: 10),
+            settingsRow.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
 
             emptyLabel.centerXAnchor.constraint(equalTo: box.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: box.centerYAnchor),
@@ -473,6 +536,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         enabledSwitch.state = app.config.enabled ? .on : .off
         learnSwitch.state = app.config.learn ? .on : .off
         loginCheck.state = app.loginItemInstalled() ? .on : .off
+
+        if let idx = languagePopup.itemArray.firstIndex(where: {
+            ($0.representedObject as? String) == app.config.language
+        }) {
+            languagePopup.selectItem(at: idx)
+        } else {
+            languagePopup.selectItem(at: 0)
+        }
 
         let ax = AXIsProcessTrusted() ? L("status.ax.granted") : L("status.ax.denied")
         statusLabel.stringValue = LF("status.line",
@@ -541,6 +612,37 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     @objc private func toggleLogin() {
         app?.toggleLogin()
         reload()
+    }
+
+    @objc private func languageChanged() {
+        guard let app = app else { return }
+        let code = languagePopup.selectedItem?.representedObject as? String
+        guard code != app.config.language else { return }
+
+        app.config.language = code
+        app.saveConfig()
+        log("language -> \(code ?? "system")")
+
+        // 文案是在建视图时取出来的，必须整窗重建；
+        // 放到下一个 runloop，避免在 popup 自己的 action 里销毁它
+        DispatchQueue.main.async {
+            setAppLanguage(code)
+            self.rebuild()
+            app.refreshStatusTitle()
+            app.closePopover()
+        }
+    }
+
+    /// 语言变了之后整窗重建（build() 里的文案是取快照的）
+    func rebuild() {
+        let old = window
+        window = nil
+        old?.orderOut(nil)
+        old?.close()
+        build()
+        reload()
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc private func refreshTapped() { reload() }
@@ -938,6 +1040,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
             saveConfig()
         }
 
+        // 界面语言要在建任何 UI 之前定下来
+        setAppLanguage(config.language)
+
         setupStatusItem()
         setupTriggers()
         settings.app = self
@@ -963,8 +1068,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         let shotFile = "/tmp/autoswitch_shot.txt"
         if let content = try? String(contentsOfFile: shotFile, encoding: .utf8) {
             try? FileManager.default.removeItem(atPath: shotFile)
-            let lines = content.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            let lines = content
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
             if let target = lines.first, !target.isEmpty {
+                // 第 4 行可以指定语言，用来验证「切换语言 → 整窗重建」这条路径
+                if lines.count > 3, !lines[3].isEmpty, lines[3] != "system" {
+                    setAppLanguage(lines[3])
+                    settings.rebuild()
+                    log("debug: language=\(lines[3]) rebuilt=\(settings.contentViewForSnapshot != nil)")
+                }
                 if lines.count > 1, lines[1] == "panel" {
                     snapshotPanel(to: target, demoBundle: lines.count > 2 ? lines[2] : nil)
                 } else {
