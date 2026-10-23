@@ -46,7 +46,6 @@
 "alert.clean.body" = "这些应用在本机找不到，规则永远不会生效。";
 "alert.clean.ok" = "清理";
 "alert.cancel" = "取消";
-"alert.ok" = "好";
 
 /* 小面板 */
 "panel.app" = "该应用";

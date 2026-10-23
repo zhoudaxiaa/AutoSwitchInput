@@ -193,14 +193,50 @@ open dist/AutoSwitchInput.app
 
 ## 开发
 
+代码按职责分层，`build.sh` 会自动收集 `src/` 下所有 `.swift`，加文件不用改脚本：
+
 ```
-src/main.swift        全部逻辑（TIS 封装、配置、窗口、状态栏、popover）
-src/Loc.swift         本地化辅助函数
-Resources/            Info.plist、图标、en/zh-Hans 语言包
-tools/make_icon.sh    重新生成 App 图标和菜单栏图标
-docs/                 README 截图
-build.sh              构建脚本
+src/
+├── main.swift                     入口（只有 3 行装配）
+├── Core/                          无依赖的地基
+│   ├── Constants.swift            bundle id、通知名
+│   ├── AppPaths.swift             配置 / 日志 / 诊断文件的落点
+│   ├── Log.swift                  日志与追加写文件
+│   └── Loc.swift                  可切换 Bundle 的本地化
+├── Input/                         与系统打交道的部分
+│   ├── InputSource.swift          TIS 封装（永不缓存输入源引用）
+│   ├── AXInspect.swift            焦点指纹、AX 属性读取
+│   ├── FocusProbe.swift           按「前台 / 运行中」两种口径抓焦点
+│   └── AppCatalog.swift           应用图标、名称、是否安装
+├── Model/                         纯逻辑，可单测
+│   ├── Config.swift               Config / ContextRule
+│   ├── ConfigStore.swift          读写 + 备份 + 旧版迁移
+│   ├── ContextRuleEngine.swift    规则匹配、生成、归一化
+│   └── SourceResolver.swift       「此刻该用哪个输入法」唯一入口
+├── Runtime/                       有状态的运行时
+│   ├── SwitchEngine.swift         切换 + 多轮校验重试 + 看门狗
+│   ├── TriggerCenter.swift        激活 / 焦点 / 输入法变化三个触发源
+│   └── LaunchAgent.swift          开机启动
+├── UI/
+│   ├── AppActions.swift           界面依赖内核的唯一协议
+│   ├── SettingsWindowController.swift
+│   ├── RuleRow.swift              规则列表的一行
+│   ├── QuickPanelController.swift 菜单栏小面板
+│   ├── StatusBarController.swift  状态栏图标、popover、右键菜单
+│   └── Snapshots.swift            调试截图
+└── App/
+    ├── AppController.swift        内核：配置、触发器接线、学习
+    ├── AppController+SpotRules.swift
+    ├── AppDelegate.swift          只处理 AppKit 生命周期
+    └── DebugHooks.swift           截图 / 焦点导出 / popover 自检
 ```
+
+几条边界约定：
+
+- **UI 只通过 `AppActions` 操作内核**，不直接碰引擎与触发器，也不直接改配置结构体。
+- **「该用哪个输入法」只有 `SourceResolver` 一个答案来源**。激活、焦点变化、看门狗三条路径都必须走它，否则看门狗会把细分规则刚切好的结果又纠回去。
+- **`ContextRuleEngine` 是纯函数**，不读配置、不碰 UI，规则匹配的所有边界情况都集中在一处。
+- **绝不缓存 `TISInputSource`**。输入法进程重启后旧引用会静默失效，这是同类工具「经常失灵」的根因。
 
 图标是代码画的，改了 `tools/make_icon.swift` 之后跑 `./tools/make_icon.sh` 就会重新生成全套尺寸。
 
@@ -209,9 +245,13 @@ build.sh              构建脚本
 ```bash
 AutoSwitchInput --window-snapshot out.png   # 把主窗口渲染成 PNG
 AutoSwitchInput --panel-snapshot out.png    # 把菜单栏面板渲染成 PNG
+AutoSwitchInput --ax-dump out.txt <bundle>  # 导出某应用当前焦点元素的 AX 特征
 AutoSwitchInput --popover-demo              # 验证 popover 能否弹出
-AutoSwitchInput --silent                    # 不输出日志
+AutoSwitchInput --silent                    # 启动时不弹设置窗口（开机启动用）
 ```
+
+需要读 AX 的调试动作（`--ax-dump`、面板截图）必须由 LaunchServices 拉起，否则 TCC 会把权限算到父进程 shell 上。所以还留了一条信号文件通道：把「输出路径 / 模式 / bundle / 语言」按行写进 `/tmp/autoswitch_shot.txt`，再 `open -a` 启动。
+
 
 ## English
 

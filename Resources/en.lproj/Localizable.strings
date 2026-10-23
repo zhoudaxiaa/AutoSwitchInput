@@ -46,7 +46,6 @@
 "alert.clean.body" = "These apps cannot be found on this Mac, so their rules never take effect.";
 "alert.clean.ok" = "Remove";
 "alert.cancel" = "Cancel";
-"alert.ok" = "OK";
 
 /* Quick panel */
 "panel.app" = "This app";

@@ -1,0 +1,274 @@
+import Cocoa
+
+// MARK: - 菜单栏小面板（点击图标弹出的 hover 面板）
+
+final class QuickPanelController: NSViewController {
+
+    weak var app: AppActions?
+
+    private let iconView = NSImageView()
+    private let nameLabel = NSTextField(labelWithString: "")
+    private let bundleLabel = NSTextField(labelWithString: "")
+    private let currentLabel = NSTextField(labelWithString: "")
+    private let enabledSwitch = NSSwitch()
+    private let rulePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private var currentBundle: String?
+    /// 「此处」那一行
+    private let spotLabel = NSTextField(labelWithString: "")
+    private let spotPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private var currentFingerprint: FocusFingerprint?
+    /// 截图预览用：伪造一个焦点指纹（正常运行时永远是 nil）
+    var demoFingerprint: FocusFingerprint?
+
+    private let panelWidth: CGFloat = 300
+    private var contentWidth: CGFloat { panelWidth - 28 }
+
+    override func loadView() {
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: panelWidth, height: 200))
+
+        iconView.imageScaling = .scaleProportionallyUpOrDown
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.widthAnchor.constraint(equalToConstant: 34).isActive = true
+        iconView.heightAnchor.constraint(equalToConstant: 34).isActive = true
+
+        nameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        nameLabel.lineBreakMode = .byTruncatingTail
+
+        bundleLabel.font = .systemFont(ofSize: 10)
+        bundleLabel.textColor = .secondaryLabelColor
+        bundleLabel.lineBreakMode = .byTruncatingMiddle
+
+        let textStack = NSStackView(views: [nameLabel, bundleLabel])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 1
+        textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        enabledSwitch.target = self
+        enabledSwitch.action = #selector(toggleEnabled)
+
+        let headerSpacer = NSView()
+        headerSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
+
+        let header = NSStackView(views: [iconView, textStack, headerSpacer, enabledSwitch])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 10
+        header.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
+
+        currentLabel.font = .systemFont(ofSize: 12)
+        currentLabel.textColor = .secondaryLabelColor
+        currentLabel.lineBreakMode = .byTruncatingTail
+        currentLabel.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
+
+        let ruleLabel = NSTextField(labelWithString: L("panel.app"))
+        ruleLabel.font = .systemFont(ofSize: 12)
+        ruleLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        rulePopup.font = .systemFont(ofSize: 12)
+        rulePopup.target = self
+        rulePopup.action = #selector(ruleChanged)
+        rulePopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let ruleRow = NSStackView(views: [ruleLabel, rulePopup])
+        ruleRow.orientation = .horizontal
+        ruleRow.alignment = .centerY
+        ruleRow.spacing = 8
+        ruleRow.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
+
+        // 「此处」：只给当前焦点所在的位置单独指定输入法
+        spotLabel.font = .systemFont(ofSize: 12)
+        spotLabel.lineBreakMode = .byTruncatingTail
+        spotLabel.setContentHuggingPriority(.required, for: .horizontal)
+        spotLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        spotPopup.font = .systemFont(ofSize: 12)
+        spotPopup.target = self
+        spotPopup.action = #selector(spotChanged)
+        spotPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let spotRow = NSStackView(views: [spotLabel, spotPopup])
+        spotRow.orientation = .horizontal
+        spotRow.alignment = .centerY
+        spotRow.spacing = 8
+        spotRow.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
+
+        let openBtn = NSButton(title: L("panel.settings"), target: self, action: #selector(openSettings))
+        openBtn.bezelStyle = .rounded
+        openBtn.controlSize = .small
+        openBtn.setContentHuggingPriority(.required, for: .horizontal)
+
+        let quitBtn = NSButton(title: L("panel.quit"), target: self, action: #selector(quitApp))
+        quitBtn.isBordered = false
+        quitBtn.font = .systemFont(ofSize: 11)
+        quitBtn.contentTintColor = .secondaryLabelColor
+        quitBtn.controlSize = .small
+        quitBtn.setContentHuggingPriority(.required, for: .horizontal)
+
+        let btnSpacer = NSView()
+        btnSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
+
+        let buttons = NSStackView(views: [openBtn, btnSpacer, quitBtn])
+        buttons.orientation = .horizontal
+        buttons.alignment = .centerY
+        buttons.spacing = 8
+        buttons.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
+
+        let sep1 = NSBox()
+        sep1.boxType = .separator
+        sep1.translatesAutoresizingMaskIntoConstraints = false
+        sep1.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
+
+        let sep2 = NSBox()
+        sep2.boxType = .separator
+        sep2.translatesAutoresizingMaskIntoConstraints = false
+        sep2.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
+
+        let stack = NSStackView(views: [header, currentLabel, sep1, ruleRow, spotRow, sep2, buttons])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            root.widthAnchor.constraint(equalToConstant: panelWidth),
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: root.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+        ])
+
+        self.view = root
+    }
+
+    func refresh() {
+        guard let app = app else { return }
+
+        let bundle = app.lastExternalBundle
+            ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        currentBundle = bundle
+
+        enabledSwitch.state = app.config.enabled ? .on : .off
+
+        if let b = bundle, b != kBundleSelf {
+            let info = appDisplayInfo(for: b)
+            iconView.image = info.icon
+            nameLabel.stringValue = info.name
+            bundleLabel.stringValue = b
+        } else {
+            iconView.image = NSImage(named: NSImage.applicationIconName)
+            nameLabel.stringValue = L("panel.unknown")
+            bundleLabel.stringValue = "—"
+        }
+
+        currentLabel.stringValue = LF("status.current", currentSourceName())
+
+        rulePopup.removeAllItems()
+        rulePopup.addItem(withTitle: L("row.none"))
+        rulePopup.lastItem?.representedObject = nil
+        for s in typeableSources() {
+            rulePopup.addItem(withTitle: s.name)
+            rulePopup.lastItem?.representedObject = s.id
+        }
+
+        if let b = bundle, let rid = app.config.apps[b],
+           let idx = rulePopup.itemArray.firstIndex(where: { ($0.representedObject as? String) == rid }) {
+            rulePopup.selectItem(at: idx)
+        } else {
+            rulePopup.selectItem(at: 0)
+        }
+
+        rulePopup.isEnabled = (bundle != nil && bundle != kBundleSelf)
+
+        refreshSpot(bundle: bundle)
+
+        // 尺寸随内容自适应
+        view.layoutSubtreeIfNeeded()
+        let h = view.fittingSize.height
+        preferredContentSize = NSSize(width: panelWidth, height: h)
+    }
+
+    /// 「此处」那一行：把此刻焦点所在的位置单独指一个输入法
+    private func refreshSpot(bundle: String?) {
+        spotPopup.removeAllItems()
+
+        // 只有拿到焦点元素才知道「此处」是哪儿
+        var fp: FocusFingerprint?
+        if let b = bundle, b != kBundleSelf {
+            fp = FocusProbe.fingerprint(ofRunning: b)
+        }
+        // 截图预览用：前台是本进程，读不到目标应用的焦点元素
+        if fp == nil { fp = demoFingerprint }
+        currentFingerprint = fp
+
+        guard let b = bundle, b != kBundleSelf, let fp = fp, let app = app else {
+            spotLabel.stringValue = LF("panel.spot", L("spot.unknown"))
+            spotLabel.textColor = .tertiaryLabelColor
+            spotPopup.addItem(withTitle: AXIsProcessTrusted()
+                              ? L("spot.na") : L("spot.needAX"))
+            spotPopup.lastItem?.representedObject = nil
+            spotPopup.selectItem(at: 0)
+            spotPopup.isEnabled = false
+            return
+        }
+
+        let matched = ContextRuleEngine.best(in: app.config.contextRules(for: b), for: fp)
+        spotLabel.textColor = .labelColor
+        spotLabel.stringValue = LF("panel.spot",
+                                   ContextRuleEngine.displayLabel(fp, matchedNote: matched?.note))
+
+        spotPopup.addItem(withTitle: L("spot.follow"))
+        spotPopup.lastItem?.representedObject = nil
+        for s in typeableSources() {
+            spotPopup.addItem(withTitle: s.name)
+            spotPopup.lastItem?.representedObject = s.id
+        }
+
+        if let rule = matched,
+           let idx = spotPopup.itemArray.firstIndex(where: {
+               ($0.representedObject as? String) == rule.source
+           }) {
+            spotPopup.selectItem(at: idx)
+        } else {
+            spotPopup.selectItem(at: 0)
+        }
+        spotPopup.isEnabled = true
+    }
+
+    /// 只更新"当前输入法"那一行，避免面板打开时重置用户的选项
+    func refreshCurrentOnly() {
+        currentLabel.stringValue = LF("status.current", currentSourceName())
+        enabledSwitch.state = (app?.config.enabled ?? true) ? .on : .off
+    }
+
+    @objc private func ruleChanged() {
+        guard let app = app, let b = currentBundle, b != kBundleSelf else { return }
+        let id = rulePopup.selectedItem?.representedObject as? String
+        app.setAppRule(bundle: b, source: id)
+        app.reloadSettingsWindow()
+        log("✎ 小面板设置 \(b) → \(id ?? "不设置")")
+    }
+
+    /// 在面板里给「此刻焦点所在的位置」指定输入法
+    @objc private func spotChanged() {
+        guard let app = app, let b = currentBundle, b != kBundleSelf,
+              let fp = currentFingerprint else { return }
+        let id = spotPopup.selectedItem?.representedObject as? String
+        app.setSpotRule(bundle: b, source: id, fp: fp)
+    }
+
+    @objc private func toggleEnabled() {
+        app?.setEnabled(enabledSwitch.state == .on)
+    }
+
+    @objc private func openSettings() {
+        app?.closePopover()
+        app?.openSettings()
+    }
+
+    @objc private func quitApp() {
+        app?.quit()
+    }
+}

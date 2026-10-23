@@ -8,7 +8,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 APP="$ROOT/dist/AutoSwitchInput.app"
 MIN_MACOS="13.0"
-SRCS=("$ROOT/src/Loc.swift" "$ROOT/src/main.swift")
+
+# 递归收集 src/ 下所有 .swift（分层目录，新增文件不用改这里）
+SRCS=()
+while IFS= read -r f; do SRCS+=("$f"); done < <(find "$ROOT/src" -name '*.swift' | sort)
 
 UNIVERSAL=1
 [ "${1:-}" = "--native" ] && UNIVERSAL=0
