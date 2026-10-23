@@ -1,6 +1,7 @@
 # 构建产物
 build/
 dist/
+out/
 *.o
 *.dSYM/
 

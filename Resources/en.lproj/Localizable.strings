@@ -4,10 +4,6 @@
 
 /* Menu bar menu */
 "menu.settings" = "Open Settings…";
-"menu.assign" = "Use “%@” for This App";
-"menu.clear" = "Clear Rule for This App";
-"menu.spot" = "This Spot (%@) Uses…";
-"menu.spot.none" = "Don’t Set (Follow the App)";
 "menu.contexts" = "Spot Rules (%d)";
 "menu.axdump" = "Diagnostics: Dump Focus Fingerprint";
 "menu.clearContexts" = "Clear Spot Rules for This App";

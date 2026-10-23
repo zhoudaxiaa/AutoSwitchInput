@@ -4,10 +4,6 @@
 
 /* 菜单栏菜单 */
 "menu.settings" = "打开设置…";
-"menu.assign" = "把「%@」设为该应用的输入法";
-"menu.clear" = "清除该应用的规则";
-"menu.spot" = "此处（%@）单独用…";
-"menu.spot.none" = "不单独设置（跟随应用）";
 "menu.contexts" = "此处规则（%d）";
 "menu.axdump" = "诊断：导出当前焦点特征";
 "menu.clearContexts" = "清除本应用的细分规则";

@@ -25,7 +25,7 @@
 
 - **按应用记忆输入法** —— 每个 App 一条规则，切到该 App 时自动切换，切走时恢复
 - **应用内细分** —— 同一个 App 里按位置区分，比如 VS Code 的终端/代码用 ABC、AI 聊天面板用中文输入法（见下）
-- **菜单栏常驻** —— 左键点图标弹出小面板，可直接改当前应用的规则；右键是完整菜单
+- **菜单栏常驻** —— 左键点图标弹出小面板，改规则都在这里；右键只留开关、清理和诊断这类不常动的项
 - **跟随学习** —— 手动切换输入法时自动记下，下次进入该应用直接生效（可关）
 - **默认输入法** —— 没配规则的应用统一用哪个输入法
 - **看门狗** —— 每秒自检一次，被别的程序抢走输入法会自己纠回来
@@ -44,7 +44,7 @@
 2. 左键点菜单栏图标 → 面板里出现 **「此处 · 终端」** → 选 **ABC**
 3. 把光标点进 AI 聊天框，再点图标 → 这一行变成 **「此处 · 对话」** → 选 **搜狗拼音**
 
-这样两条规则各自只认自己那个位置。右键菜单里也有同一项：**「此处（终端）单独用…」**。
+这样两条规则各自只认自己那个位置。要删掉某条，右键菜单里有「此处规则（N）」子菜单，点哪条删哪条。
 
 面板长这样：
 
@@ -227,7 +227,7 @@ Most similar tools break after a while. This one is built around stability: thre
 
 - Per-app input source rules
 - **Per-spot rules** inside an app — e.g. English in the VS Code terminal and editor, Chinese in the AI chat panel
-- Menu bar panel (left click) + full menu (right click)
+- Menu bar panel (left click) for everyday rule edits; the right-click menu keeps only toggles, cleanup and diagnostics
 - Learns your manual switches
 - Default input source for apps without a rule
 - Watchdog corrects the input source if something steals it
@@ -266,7 +266,7 @@ Same app, different spots, different input sources — no need to switch manuall
 2. Left-click the menu bar icon — the panel shows **“Here · Terminal”** — pick **ABC**
 3. Click into the AI chat box, click the icon again — it now reads **“Here · Chat”** — pick your Chinese IME
 
-Each rule only matches its own spot. The same item is available in the right-click menu as **“This Spot (Terminal) Uses…”**. Choosing **“Follow app”** deletes the rule for that spot and falls back to the per-app setting.
+Each rule only matches its own spot. Choosing **“Follow app”** deletes the rule for that spot and falls back to the per-app setting. To remove several at once, the right-click menu has a **“Spot Rules (N)”** submenu.
 
 The discriminator is `AXDOMClassList`, a non-standard attribute Chromium exposes:
 

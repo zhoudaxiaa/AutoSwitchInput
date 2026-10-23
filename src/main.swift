@@ -1119,6 +1119,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
 
     var pendingApply: DispatchWorkItem?
 
+    /// 切换请求序号：每发起一次切换就 +1。
+    /// 后发的请求会让先前那条「延迟校验/重试」链失效，
+    /// 否则激活 + 看门狗 + 焦点变化会各起一条链并行推同一个值，
+    /// 日志里就出现成对的「重试」并且互相打架。
+    var applyToken = 0
+
     var lastActivationAt: Date = .distantPast
     var activationBundle: String?
     var lastExternalBundle: String?
@@ -1126,10 +1132,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     /// 菜单打开那一刻的前台应用 —— 菜单弹出后再问「前台」可能已经不是它了
     var menuFrontPID: pid_t = 0
     var menuFrontBundle: String?
-
-    /// 菜单里「当前位置」子菜单对应的焦点与所属应用
-    var pendingSpotFP: FocusFingerprint?
-    var pendingSpotBundle: String?
 
     var popover: NSPopover?
     var quickPanel: QuickPanelController?
@@ -1592,52 +1594,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
 
         menu.addItem(.separator())
 
+        // 只读状态行：当前应用 → 当前输入法。
+        // 改应用规则、改「此处」的输入法都在左键小面板里做，这里不重复一遍。
         let head = NSMenuItem(title: "\(appName) → \(currentSourceName())", action: nil, keyEquivalent: "")
         head.isEnabled = false
         menu.addItem(head)
 
-        let assign = NSMenuItem(title: LF("menu.assign", currentSourceName()),
-                                action: #selector(assignCurrent), keyEquivalent: "")
-        assign.target = self
-        assign.isEnabled = front != nil && bundle != kBundleSelf
-        menu.addItem(assign)
-
-        let clear = NSMenuItem(title: L("menu.clear"), action: #selector(clearCurrent), keyEquivalent: "")
-        clear.target = self
-        clear.isEnabled = config.apps[bundle] != nil
-        menu.addItem(clear)
-
-        // 当前位置：直接选输入法，不用先手动切
-        if AXIsProcessTrusted(), let target = externalTarget(),
-           let fp = focusedFingerprint(pid: target.pid) {
-            pendingSpotFP = fp
-            pendingSpotBundle = target.bundle
-
-            let label = spotLabel(fp, bundle: target.bundle)
-            let current = matchedContextRule(bundle: target.bundle, fp: fp)?.source
-
-            let spotMenu = NSMenu()
-            let noneItem = NSMenuItem(title: L("menu.spot.none"),
-                                      action: #selector(setSpotNone), keyEquivalent: "")
-            noneItem.target = self
-            noneItem.state = current == nil ? .on : .off
-            spotMenu.addItem(noneItem)
-            spotMenu.addItem(.separator())
-
-            for s in typeableSources() {
-                let item = NSMenuItem(title: s.name, action: #selector(setSpotSource(_:)),
-                                      keyEquivalent: "")
-                item.target = self
-                item.representedObject = s.id
-                item.state = (current == s.id) ? .on : .off
-                spotMenu.addItem(item)
-            }
-
-            let spotParent = NSMenuItem(title: LF("menu.spot", label), action: nil, keyEquivalent: "")
-            spotParent.submenu = spotMenu
-            menu.addItem(spotParent)
-        }
-
+        // 已配的位置规则：留作清理入口（面板只能删「光标所在的那一处」）
         let ctxCount = config.contexts.filter { $0.bundle == bundle }.count
         if ctxCount > 0 {
             let sub = NSMenu()
@@ -1706,45 +1669,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
 
     @objc func openSettings() { settings.show() }
 
-    @objc func assignCurrent() {
-        guard let bundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
-              let cur = currentSourceID() else { return }
-        config.apps[bundle] = cur
-        saveConfig()
-        log("✎ 手动指定 \(bundle) → \(cur)")
-        settings.reload()
-    }
-
-    @objc func clearCurrent() {
-        guard let bundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return }
-        config.apps.removeValue(forKey: bundle)
-        saveConfig()
-        log("✎ 清除规则 \(bundle)")
-        settings.reload()
-    }
-
     @objc func deleteContextRule(_ sender: NSMenuItem) {
         guard sender.tag >= 0, sender.tag < config.contexts.count else { return }
         let r = config.contexts.remove(at: sender.tag)
         saveConfig()
-        log("✎ 删除细分规则 \(r.bundle) [\(r.note ?? "-")]")
+        log("✎ 删除位置规则 \(r.bundle) [\(r.note ?? "-")]")
         settings.reload()
     }
 
     @objc func clearContexts() {
         guard let bundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return }
         clearContextRules(for: bundle)
-    }
-
-    @objc func setSpotSource(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String,
-              let fp = pendingSpotFP, let bundle = pendingSpotBundle else { return }
-        setSpotRule(bundle: bundle, source: id, fp: fp)
-    }
-
-    @objc func setSpotNone() {
-        guard let fp = pendingSpotFP, let bundle = pendingSpotBundle else { return }
-        setSpotRule(bundle: bundle, source: nil, fp: fp)
     }
 
     /// 诊断：把「此刻的焦点特征」追加到 ax-focus.txt，方便边点边记
@@ -1935,19 +1870,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
               front.bundleIdentifier == bundle else { return nil }
         guard let fp = focusedFingerprint(pid: front.processIdentifier) else { return nil }
         return matchedContextRule(bundle: bundle, fp: fp)?.source
-    }
-
-    /// 当前应该操作的外部应用（排除自己）
-    func externalTarget() -> (bundle: String, pid: pid_t)? {
-        if let f = NSWorkspace.shared.frontmostApplication,
-           let b = f.bundleIdentifier, b != kBundleSelf {
-            return (b, f.processIdentifier)
-        }
-        if let b = lastExternalBundle,
-           let running = NSRunningApplication.runningApplications(withBundleIdentifier: b).first {
-            return (b, running.processIdentifier)
-        }
-        return nil
     }
 
     /// 给用户看的位置名称：优先按 DOM class 猜（跟着语言走），其次用规则备注
@@ -2150,10 +2072,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
 
         log("⇄ [\(reason)] \(bundle): \(cur ?? "nil") → \(desired)")
         lastAppliedBundle = bundle
-        applyWithVerify(desired, bundle: bundle, attempt: 0)
+        applyWithVerify(desired, bundle: bundle, attempt: 0, token: nextApplyToken())
     }
 
-    func applyWithVerify(_ desired: String, bundle: String, attempt: Int) {
+    /// 每次发起新切换就换一个令牌，旧的重试链看到令牌变了就自行退出
+    private func nextApplyToken() -> Int {
+        applyToken &+= 1
+        return applyToken
+    }
+
+    func applyWithVerify(_ desired: String, bundle: String, attempt: Int, token: Int) {
+        guard token == applyToken else { return }
+
         expectedID = desired
         expectedUntil = Date().addingTimeInterval(1.5)
 
@@ -2167,12 +2097,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
 
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self = self else { return }
+            // 期间又发起了新的切换，这条链已经过期，别再推一遍
+            guard token == self.applyToken else { return }
             guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundle else { return }
             guard Date() >= self.userOverrideUntil else { return }
             guard currentSourceID() != desired else { return }
 
             log("↺ 被目标应用回滚，第 \(attempt + 1) 次重试 \(bundle)")
-            self.applyWithVerify(desired, bundle: bundle, attempt: attempt + 1)
+            self.applyWithVerify(desired, bundle: bundle, attempt: attempt + 1, token: token)
         }
     }
 
@@ -2192,7 +2124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
 
             log("🛡 看门狗纠正 \(bundle) → \(desired)")
             self.lastAppliedBundle = bundle
-            self.applyWithVerify(desired, bundle: bundle, attempt: 0)
+            self.applyWithVerify(desired, bundle: bundle, attempt: 0, token: self.nextApplyToken())
         }
     }
 
