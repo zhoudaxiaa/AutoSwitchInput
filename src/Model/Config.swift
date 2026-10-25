@@ -1,5 +1,49 @@
 import Foundation
 
+/// 一个「位置」长什么样，存下来备查。
+///
+/// 为什么规则里要带这个：两个位置的特征可能一开始长得一模一样
+/// （VS Code 的编辑器和 Copilot 聊天框都是 `native-edit-context`）。
+/// 等第二个位置出现时，只有把两条祖先链摆在一起比，才知道从哪一层开始不同。
+/// 没有快照就只能靠「通用类名单」猜，而名单永远漏项。
+struct SpotSignature: Codable {
+    var role: String = ""
+    var identifier: String = ""
+    /// 焦点元素自身的 DOM class
+    var domClasses: [String] = []
+    /// 祖先的 DOM class，由近及远
+    var ancestorClasses: [String] = []
+    /// 祖先的标题 / 描述，由近及远
+    var ancestorTitles: [String] = []
+
+    init() {}
+
+    init(role: String, identifier: String, domClasses: [String],
+         ancestorClasses: [String], ancestorTitles: [String]) {
+        self.role = role
+        self.identifier = identifier
+        self.domClasses = domClasses
+        self.ancestorClasses = ancestorClasses
+        self.ancestorTitles = ancestorTitles
+    }
+
+    // 手写解码：字段缺失时回落到默认值，别让手工改过的配置整份失效
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        role = try c.decodeIfPresent(String.self, forKey: .role) ?? ""
+        identifier = try c.decodeIfPresent(String.self, forKey: .identifier) ?? ""
+        domClasses = try c.decodeIfPresent([String].self, forKey: .domClasses) ?? []
+        ancestorClasses = try c.decodeIfPresent([String].self, forKey: .ancestorClasses) ?? []
+        ancestorTitles = try c.decodeIfPresent([String].self, forKey: .ancestorTitles) ?? []
+    }
+
+    /// 由近及远的所有 class（去重）
+    var allClasses: [String] {
+        var seen = Set<String>()
+        return (domClasses + ancestorClasses).filter { seen.insert($0).inserted }
+    }
+}
+
 /// 应用内的细分规则：同一个应用，不同位置用不同输入法
 struct ContextRule: Codable {
     var bundle: String
@@ -15,6 +59,9 @@ struct ContextRule: Codable {
     var classContains: String? = nil
     /// 给用户看的备注，例如「终端」
     var note: String? = nil
+    /// 保存这条规则时，那个位置长什么样。
+    /// 用来在「两个位置撞车」时自动找差异，以及日后重新定位。
+    var signature: SpotSignature? = nil
 }
 
 struct Config: Codable {

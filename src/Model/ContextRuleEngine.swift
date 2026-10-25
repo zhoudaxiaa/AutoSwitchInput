@@ -102,9 +102,12 @@ enum ContextRuleEngine {
     /// 用当前焦点生成一条「尽量窄但别太脆」的规则。
     /// DOM class / identifier 已经能唯一确定位置，就不再加 role ——
     /// role 会随 Electron 版本漂移，多写一个条件只是多一个失效点。
-    static func make(bundle: String, source: String, fp: FocusFingerprint, note: String? = nil) -> ContextRule {
+    ///
+    /// - Parameter classOverride: 差异定位算出来的 class，优先于自动挑选
+    static func make(bundle: String, source: String, fp: FocusFingerprint,
+                     note: String? = nil, classOverride: String? = nil) -> ContextRule {
         var rule = ContextRule(bundle: bundle, source: source)
-        if let cls = distinguishingClass(fp) {
+        if let cls = classOverride ?? distinguishingClass(fp) {
             rule.classContains = cls
         } else if !fp.identifier.isEmpty {
             rule.identifier = fp.identifier
@@ -115,6 +118,7 @@ enum ContextRuleEngine {
             }
         }
         rule.note = note ?? displayLabel(fp, matchedNote: nil)
+        rule.signature = signature(of: fp)
         return rule
     }
 
@@ -128,6 +132,125 @@ enum ContextRuleEngine {
         let usable: (String) -> Bool = { !$0.isEmpty && $0.count <= 60 && !isGenericClass($0) }
         if let c = fp.domClasses.first(where: usable) { return c }
         return fp.ancestorClasses.first(where: usable)
+    }
+
+    // MARK: - 差异定位
+    //
+    // 通用类名单总有漏项（`showUnused` 就是这么漏的）。与其不停补名单，
+    // 不如在「两个位置撞车」时把两条祖先链摆在一起比：
+    // 谁独有的那个 class，就是谁的位置标识。
+    // 通用类在两条链里都有，会自动落进「公共部分」被跳过 —— 不用名单也知道它们通用。
+
+    static func signature(of fp: FocusFingerprint) -> SpotSignature {
+        SpotSignature(role: fp.role,
+                      identifier: fp.identifier,
+                      domClasses: fp.domClasses,
+                      ancestorClasses: fp.ancestorClasses,
+                      ancestorTitles: fp.ancestorTitles)
+    }
+
+    /// 老规则（1.4.4 之前存的）没有快照。至少把它显式用过的条件
+    /// 当成「它占住的 class」，免得新位置又挑到同一个。
+    static func pseudoSignature(of rule: ContextRule) -> SpotSignature {
+        var s = SpotSignature()
+        s.role = rule.role ?? ""
+        s.identifier = rule.identifier ?? ""
+        s.domClasses = [rule.classContains, rule.titleContains].compactMap { $0 }
+        return s
+    }
+
+    /// 找一个「本位置有、别人都没有」的 class，用来把自己和别人分开。
+    /// 由近及远取第一个，所以拿到的是最贴近焦点的那个区分点。
+    static func exclusiveClass(in sig: SpotSignature,
+                               excluding others: [SpotSignature]) -> String? {
+        for c in sig.allClasses where !c.isEmpty && c.count <= 60 && !isGenericClass(c) {
+            if others.allSatisfy({ !$0.allClasses.contains(c) }) { return c }
+        }
+        return nil
+    }
+
+    /// 一次「添加位置规则」要做的调整：新位置用哪个 class，哪些旧规则要收窄。
+    struct SpotResolution {
+        /// 新位置该用的 class（nil 表示退回 identifier / role）
+        var classForNew: String?
+        /// 需要收窄的旧规则：索引 → 新 class
+        var narrowings: [(index: Int, from: String?, to: String)] = []
+        /// 给日志用的说明
+        var notes: [String] = []
+    }
+
+    /// 这条规则是不是就代表「当前这个位置」？
+    ///
+    /// 不能只比条件字符串：两个位置特征撞车时（都算出同一个 class），
+    /// 字符串相等会把「别人」误判成「自己」，于是完全不触发收窄 ——
+    /// 那正是两个位置共用一条规则、改一个两边一起变的原因。
+    ///
+    /// 有快照就以快照为准：快照里那些能区分位置的 class，当前焦点必须也都有。
+    static func isSameSpot(_ rule: ContextRule, _ fp: FocusFingerprint) -> Bool {
+        let fpClasses = Set(fp.domClasses + fp.ancestorClasses)
+
+        if let sig = rule.signature {
+            let markers = sig.allClasses.filter { !isGenericClass($0) }
+            if !markers.isEmpty {
+                return markers.allSatisfy { fpClasses.contains($0) }
+            }
+            // 快照里全是通用 class，没有可用于区分的依据，只能当作同一个位置
+            return true
+        }
+
+        // 老规则没有快照：退回「条件与当前候选相同」这个近似判断
+        if let c = rule.classContains, !c.isEmpty,
+           let base = distinguishingClass(fp) {
+            return c.caseInsensitiveCompare(base) == .orderedSame
+        }
+        return false
+    }
+
+    /// 冲突消解：算出「当前位置」和已有规则各自该退到哪个 class。
+    ///
+    /// 光给新位置挑个更窄的 class 不够 —— 那条旧规则还留在原地继续吃掉新位置，
+    /// 两个位置就共用同一个输入法了。所以必须两头一起收窄。
+    ///
+    /// - Parameter rules: 该应用现有的全部位置规则
+    static func resolveSpot(bundle: String, fp: FocusFingerprint,
+                            rules: [ContextRule]) -> SpotResolution {
+        let sig = signature(of: fp)
+        let baseClass = distinguishingClass(fp)
+
+        var rivals: [SpotSignature] = []
+        var narrowable: [(index: Int, sig: SpotSignature)] = []
+
+        for (i, rule) in rules.enumerated() where rule.bundle == bundle {
+            guard matches(rule, fp) else { continue }
+            // 这条就是「当前位置」本身（用户只是改它的输入法），不算撞车
+            if isSameSpot(rule, fp) { continue }
+            if let other = rule.signature {
+                rivals.append(other)
+                narrowable.append((i, other))
+            } else {
+                // 老规则没有快照，收窄不了，但至少要占住它已经用掉的 class，
+                // 否则新位置又挑到同一个，等于白收窄
+                rivals.append(pseudoSignature(of: rule))
+            }
+        }
+
+        var out = SpotResolution(classForNew: baseClass)
+        guard !rivals.isEmpty else { return out }
+
+        if let c = exclusiveClass(in: sig, excluding: rivals), c != baseClass {
+            out.classForNew = c
+            out.notes.append("位置撞车，新位置改用 \(c)（原候选 \(baseClass ?? "nil")）")
+        }
+
+        // 旧规则各自退到「自己有、新位置没有」的 class
+        for (i, other) in narrowable {
+            guard let c = exclusiveClass(in: other, excluding: [sig]) else { continue }
+            let old = rules[i].classContains
+            guard old != c else { continue }
+            out.narrowings.append((i, old, c))
+            out.notes.append("收窄旧规则 [\(rules[i].note ?? "-")]：\(old ?? "nil") → \(c)")
+        }
+        return out
     }
 
     /// 给用户看的位置名称：优先看祖先里的「位置容器」（比焦点元素自身更能说明这是哪儿），

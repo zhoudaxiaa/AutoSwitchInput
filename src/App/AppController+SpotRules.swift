@@ -10,8 +10,20 @@ extension AppController {
         // 一旦 matched 是条误匹配的旧规则，新规则会被冠上别人的名字
         // （Copilot 聊天框被标成「编辑器」就是这么来的）
         let label = ContextRuleEngine.displayLabel(fp, matchedNote: matched?.note)
+
+        // 先做冲突消解：两个位置特征撞车时，把彼此都收窄到各自独有的 class。
+        // 只收窄新的那个是不够的 —— 旧规则还留在原地继续吃掉新位置。
+        let res = ContextRuleEngine.resolveSpot(bundle: bundle, fp: fp, rules: config.contexts)
+        for note in res.notes { log("◻︎ \(bundle) \(note)") }
+        for n in res.narrowings {
+            guard config.contexts.indices.contains(n.index) else { continue }
+            config.contexts[n.index].classContains = n.to
+            config.contexts[n.index].identifier = nil
+            config.contexts[n.index].titleContains = nil
+        }
+
         let probe = ContextRuleEngine.make(bundle: bundle, source: source ?? "",
-                                           fp: fp, note: label)
+                                           fp: fp, note: label, classOverride: res.classForNew)
 
         // 同一个位置只留一条，避免越点越多
         config.contexts.removeAll { $0.bundle == bundle && ContextRuleEngine.sameSpot($0, probe) }
@@ -20,7 +32,8 @@ extension AppController {
             var rule = probe
             rule.source = source
             config.contexts.append(rule)
-            log("✎ 位置规则 \(bundle) [\(rule.note ?? "-")] → \(source)")
+            let how = rule.classContains ?? rule.identifier ?? rule.titleContains ?? rule.role ?? "-"
+            log("✎ 位置规则 \(bundle) [\(rule.note ?? "-")] → \(source) via \(how)")
         } else {
             log("✎ 清除位置规则 \(bundle) [\(probe.note ?? "-")]")
         }
