@@ -10,7 +10,8 @@ struct ContextRule: Codable {
     var identifier: String? = nil
     /// 焦点元素自身或其祖先的标题包含该词
     var titleContains: String? = nil
-    /// 焦点元素的 DOM class 包含该词（Electron 应用的稳定标识）
+    /// 焦点元素自身或其祖先的 DOM class 包含该词（Electron 应用的稳定标识）。
+    /// 祖先也算 —— 同一个应用里不同输入区往往只有祖先 class 不同。
     var classContains: String? = nil
     /// 给用户看的备注，例如「终端」
     var note: String? = nil

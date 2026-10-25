@@ -238,6 +238,7 @@ src/
 - **`ContextRuleEngine` 是纯函数**，不读配置、不碰 UI，规则匹配的所有边界情况都集中在一处。
 - **绝不缓存 `TISInputSource`**。输入法进程重启后旧引用会静默失效，这是同类工具「经常失灵」的根因。
 - **Electron 的无障碍树要主动叫它建**。Chromium 只在客户端请求时才搭 AX 树，否则 `AXFocusedUIElement` 一律返回 `noValue`（`AXFocusedWindow` 却是好的，很容易误判成「应用不支持 AX」）。所以 `FocusProbe` 会在应用激活时设一次 `AXManualAccessibility`，读取时再做有限重试。
+- **区分「位置」要靠祖先的 DOM class，不能只看焦点元素自身**。VS Code 的代码编辑器和 Copilot 聊天框，焦点元素都是 `native-edit-context`，往上第 3 层才不同（`editor-instance` vs `chat-input-container`）。所以 `FocusFingerprint` 同时收 `domClasses` 和 `ancestorClasses`，`ContextRuleEngine` 里维护一份「通用容器」名单，生成规则时跳过它们、匹配时给它们降权。
 
 图标是代码画的，改了 `tools/make_icon.swift` 之后跑 `./tools/make_icon.sh` 就会重新生成全套尺寸。
 
@@ -248,6 +249,7 @@ AutoSwitchInput --window-snapshot out.png   # 把主窗口渲染成 PNG
 AutoSwitchInput --panel-snapshot out.png    # 把菜单栏面板渲染成 PNG
 AutoSwitchInput --ax-dump out.txt <bundle>  # 导出某应用当前焦点元素的 AX 特征（含重试结果）
 AutoSwitchInput --ax-deep out.txt <bundle>  # 逐项探测 AX 属性，定位「为什么读不到焦点」
+AutoSwitchInput --ax-chain out.txt <bundle> # 沿焦点元素往上打印祖先链，用来找位置特征
 AutoSwitchInput --popover-demo              # 验证 popover 能否弹出
 AutoSwitchInput --silent                    # 启动时不弹设置窗口（开机启动用）
 ```

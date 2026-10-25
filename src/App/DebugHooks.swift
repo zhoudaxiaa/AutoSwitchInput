@@ -68,6 +68,13 @@ enum DebugHooks {
             return true
         }
 
+        if mode == "axchain" {
+            Snapshots.ancestorChain(to: target,
+                                    bundleID: lines.count > 2 && !lines[2].isEmpty ? lines[2] : nil,
+                                    delay: lines.count > 3 ? (Double(lines[3]) ?? 2) : 2)
+            return true
+        }
+
         if lines.count > 3, !lines[3].isEmpty, lines[3] != "system" {
             setAppLanguage(lines[3])
             controller.rebuildSettingsWindow()
@@ -111,6 +118,13 @@ enum DebugHooks {
             let bundle = idx + 2 < args.count ? args[idx + 2] : nil
             let delay = idx + 3 < args.count ? (Double(args[idx + 3]) ?? 3) : 3
             Snapshots.deepProbe(to: args[idx + 1], bundleID: bundle, delay: delay)
+            return true
+        }
+        // --ax-chain <输出路径> [bundle id] [延迟秒]
+        if let idx = args.firstIndex(of: "--ax-chain"), idx + 1 < args.count {
+            let bundle = idx + 2 < args.count ? args[idx + 2] : nil
+            let delay = idx + 3 < args.count ? (Double(args[idx + 3]) ?? 3) : 3
+            Snapshots.ancestorChain(to: args[idx + 1], bundleID: bundle, delay: delay)
             return true
         }
         if args.contains("--popover-demo") {

@@ -163,6 +163,62 @@ enum Snapshots {
         }
     }
 
+    /// 沿焦点元素往上逐层打印祖先，用来找「能区分同一应用内两个位置」的稳定特征。
+    ///
+    /// 背景：VS Code 的代码编辑器和 Copilot 聊天输入框都暴露
+    /// `AXDOMClassList = ["native-edit-context"]`，只看焦点元素本身无法区分，
+    /// 必须往上看祖先的 DOM class / identifier / 标题。
+    static func ancestorChain(to path: String, bundleID: String?, delay: Double) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            var out = "AXIsProcessTrusted: \(AXIsProcessTrusted())\n"
+            out += "time: \(Date())\n\n"
+
+            let apps: [NSRunningApplication]
+            if let b = bundleID, !b.isEmpty {
+                apps = NSRunningApplication.runningApplications(withBundleIdentifier: b)
+            } else if let f = NSWorkspace.shared.frontmostApplication {
+                apps = [f]
+            } else {
+                apps = []
+            }
+
+            for app in apps {
+                let b = app.bundleIdentifier ?? "?"
+                out += "=== \(b) pid=\(app.processIdentifier) active=\(app.isActive) ===\n"
+                let result = focusedElementResult(pid: app.processIdentifier)
+                guard var cur = result.element else {
+                    out += "  拿不到焦点元素: \(axErrorName(result.error))\n\n"
+                    continue
+                }
+
+                for level in 0..<16 {
+                    let role = axString(cur, kAXRoleAttribute)
+                    let sub = axString(cur, kAXSubroleAttribute)
+                    let dom = axStringArray(cur, "AXDOMClassList")
+                    let id = axString(cur, kAXIdentifierAttribute)
+                    let title = axString(cur, kAXTitleAttribute)
+                    let desc = axString(cur, kAXDescriptionAttribute)
+
+                    var line = String(format: "  [%02d] ", level) + "role=\(role)"
+                    if !sub.isEmpty { line += " sub=\(sub)" }
+                    if !dom.isEmpty { line += " dom=\(dom)" }
+                    if !id.isEmpty { line += " id=\(id.prefix(50))" }
+                    if !title.isEmpty { line += " title=\(title.prefix(50))" }
+                    if !desc.isEmpty { line += " desc=\(desc.prefix(50))" }
+                    out += line + "\n"
+
+                    var p: CFTypeRef?
+                    guard AXUIElementCopyAttributeValue(cur, kAXParentAttribute as CFString, &p) == .success,
+                          let pv = p else { break }
+                    cur = pv as! AXUIElement
+                }
+                out += "\n"
+            }
+
+            flush(out, to: path)
+        }
+    }
+
     /// 2x 渲染，保证 README 里在 Retina 屏上不糊
     private static func writePNG(_ view: NSView, to path: String) {
         view.layoutSubtreeIfNeeded()
