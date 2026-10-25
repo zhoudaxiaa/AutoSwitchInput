@@ -172,6 +172,16 @@ func fingerprintOfElement(_ cur0: AXUIElement) -> FocusFingerprint? {
         if !t.isEmpty { fp.ancestorTitles.append(t) }
         if !d.isEmpty && d != t { fp.ancestorTitles.append(d) }
         if !i.isEmpty { fp.ancestorIDs.append(i) }
+
+        // Monaco 的编辑器内部（overflow-guard / monaco-editor / showUnused 这类状态类）
+        // 在代码编辑器、聊天框、搜索框里完全一样，只有「跳出这一层」之后才是真正的位置。
+        // 与其穷举这些会变的 class 名，不如按结构判断：碰到 AXCodeStyleGroup
+        // 就把之前收的 class 全丢掉，从它往上重新算。
+        if axString(cur, kAXSubroleAttribute) == "AXCodeStyleGroup" {
+            fp.ancestorClasses.removeAll()
+            continue
+        }
+
         // 祖先的 DOM class 也要收：这是区分「同一个应用里不同输入区」的关键
         fp.ancestorClasses.append(contentsOf: axStringArray(cur, "AXDOMClassList"))
     }

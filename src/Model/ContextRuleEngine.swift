@@ -7,19 +7,29 @@ enum ContextRuleEngine {
     /// 通用容器 class：同一个应用里**多个位置共用**，拿它当位置标识必然误判。
     ///
     /// 典型例子：VS Code 的代码编辑器和 Copilot 聊天框，焦点元素都是
-    /// `native-edit-context`，中间几层都是 `overflow-guard` / `monaco-editor`。
+    /// `native-edit-context`，中间几层都是 `overflow-guard` / `monaco-editor`，
+    /// 再上面还有 `showUnused` 这类**状态类** —— 它们跟「在哪儿」毫无关系。
     /// 真正的区分点是再往上的 `editor-instance` / `chat-input-container`。
-    /// 所以这些 class 既不能用来生成规则，匹配时也要降权。
+    ///
+    /// 这份名单只是第二道防线（第一道是按 `AXCodeStyleGroup` 结构判断），
+    /// 所以宁可多列一些：错杀一个通用类没有损失，漏掉一个就会让两个位置串味。
     private static let genericClasses: Set<String> = [
         "native-edit-context",   // Monaco 所有文本输入：编辑器 / 聊天框 / 搜索框
         "overflow-guard",        // Monaco 内部滚动容器
         "monaco-editor",
         "monaco-split-view2",
         "monaco-grid-view",
+        "monaco-workbench",
         "split-view-view",
         "split-view-container",
         "no-user-select",
-        "mac", "vs-dark", "vs", "focused", "visible", "working",
+        "separator-border",
+        "floating-editor-outer-top",
+        "editor-tabs-multiple",
+        // Monaco 的状态 / 主题类，跟着设置和界面状态变，与位置无关
+        "mac", "vs", "vs-dark", "focused", "visible", "working",
+        "showunused", "showdeprecated",
+        // 太宽泛，几乎每个分区都有
         "part", "composite", "editor",
     ]
 
@@ -112,12 +122,12 @@ enum ContextRuleEngine {
     ///
     /// 先看焦点元素自身的 class；如果自身是通用容器（Monaco 的
     /// `native-edit-context` 之类），就往上找第一个非通用的 —— 那才是位置本身。
+    /// 一个都找不到就返回 nil，让调用方退回 identifier / role，
+    /// **绝不拿通用 class 凑数**：那会让这个应用里所有位置共用一条规则。
     static func distinguishingClass(_ fp: FocusFingerprint) -> String? {
         let usable: (String) -> Bool = { !$0.isEmpty && $0.count <= 60 && !isGenericClass($0) }
         if let c = fp.domClasses.first(where: usable) { return c }
-        if let c = fp.ancestorClasses.first(where: usable) { return c }
-        // 全是通用 class 时退回自身第一个，总比没有强
-        return fp.domClasses.first { !$0.isEmpty && $0.count <= 60 }
+        return fp.ancestorClasses.first(where: usable)
     }
 
     /// 给用户看的位置名称：优先看祖先里的「位置容器」（比焦点元素自身更能说明这是哪儿），

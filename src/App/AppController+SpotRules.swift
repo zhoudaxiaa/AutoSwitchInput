@@ -6,8 +6,12 @@ extension AppController {
     /// source 传 nil 表示清除该位置的规则（回到「跟随应用」）
     func setSpotRule(bundle: String, source: String?, fp: FocusFingerprint) {
         let matched = ContextRuleEngine.best(in: config.contextRules(for: bundle), for: fp)
+        // 备注按「此刻焦点在哪」现算，不要继承 matched 的：
+        // 一旦 matched 是条误匹配的旧规则，新规则会被冠上别人的名字
+        // （Copilot 聊天框被标成「编辑器」就是这么来的）
+        let label = ContextRuleEngine.displayLabel(fp, matchedNote: matched?.note)
         let probe = ContextRuleEngine.make(bundle: bundle, source: source ?? "",
-                                           fp: fp, note: matched?.note)
+                                           fp: fp, note: label)
 
         // 同一个位置只留一条，避免越点越多
         config.contexts.removeAll { $0.bundle == bundle && ContextRuleEngine.sameSpot($0, probe) }

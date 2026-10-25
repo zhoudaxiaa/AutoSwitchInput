@@ -35,11 +35,18 @@ enum Snapshots {
         // 截图时固定展示某个应用，避免抓到的正好是当前前台的小工具
         if let b = demoBundle { host.lastExternalBundle = b }
         // 前台是本进程，读不到目标应用的焦点元素，
-        // 用 AUTOSWITCH_DEMO_SPOT 伪造一个指纹来预览「此处」那一行
+        // 用 AUTOSWITCH_DEMO_SPOT 伪造一个指纹来预览「此处」那一行。
+        // 逗号分隔；带 @ 前缀的算祖先 class（用来预览「编辑器 / 对话」的区分）
         if let raw = ProcessInfo.processInfo.environment["AUTOSWITCH_DEMO_SPOT"], !raw.isEmpty {
             var fp = FocusFingerprint()
             fp.role = "AXTextField"
-            fp.domClasses = raw.split(separator: ",").map(String.init)
+            for item in raw.split(separator: ",").map(String.init) {
+                if item.hasPrefix("@") {
+                    fp.ancestorClasses.append(String(item.dropFirst()))
+                } else {
+                    fp.domClasses.append(item)
+                }
+            }
             panel.demoFingerprint = fp
         }
 
