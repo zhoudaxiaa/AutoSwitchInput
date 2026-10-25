@@ -50,6 +50,7 @@
 /* 小面板 */
 "panel.app" = "该应用";
 "panel.spot" = "此处 · %@";
+"panel.spot.last" = "此处（上次）· %@";
 "panel.unknown" = "未知应用";
 "panel.settings" = "打开设置…";
 "panel.quit" = "退出";
@@ -60,5 +61,6 @@
 "spot.editor" = "编辑器";
 "spot.chat" = "对话";
 "spot.unknown" = "无法识别";
+"spot.reading" = "读取中…";
 "spot.na" = "当前不可用";
 "spot.needAX" = "需辅助功能权限";

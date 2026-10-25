@@ -56,6 +56,53 @@ func focusedElement(pid: pid_t) -> AXUIElement? {
     return (raw as! AXUIElement)
 }
 
+/// 读焦点元素并保留 AXError。
+///
+/// 区分两类失败至关重要：
+///  - `.apiDisabled` / `.notTrusted`：真的是权限问题，只能让用户去勾选；
+///  - `.cannotComplete` / `.invalidUIElement`：目标应用一时没应答（Electron 的
+///    AX 服务偶尔卡住或正在切面板），等几十毫秒重试就能读到，不该当成「无法识别」。
+func focusedElementResult(pid: pid_t) -> (element: AXUIElement?, error: AXError) {
+    guard pid > 0 else { return (nil, .invalidUIElement) }
+    let appEl = AXUIElementCreateApplication(pid)
+    var v: CFTypeRef?
+    let err = AXUIElementCopyAttributeValue(appEl, kAXFocusedUIElementAttribute as CFString, &v)
+    guard err == .success, let raw = v else { return (nil, err) }
+    return ((raw as! AXUIElement), .success)
+}
+
+/// 这个错误值不值得重试
+func axErrorIsRetryable(_ e: AXError) -> Bool {
+    switch e {
+    case .cannotComplete, .invalidUIElement, .noValue, .attributeUnsupported:
+        return true
+    default:
+        return false
+    }
+}
+
+func axErrorName(_ e: AXError) -> String {
+    switch e {
+    case .success: return "success"
+    case .failure: return "failure"
+    case .illegalArgument: return "illegalArgument"
+    case .invalidUIElement: return "invalidUIElement"
+    case .invalidUIElementObserver: return "invalidUIElementObserver"
+    case .cannotComplete: return "cannotComplete(目标应用未应答)"
+    case .attributeUnsupported: return "attributeUnsupported"
+    case .actionUnsupported: return "actionUnsupported"
+    case .notificationUnsupported: return "notificationUnsupported"
+    case .notImplemented: return "notImplemented"
+    case .notificationAlreadyRegistered: return "notificationAlreadyRegistered"
+    case .notificationNotRegistered: return "notificationNotRegistered"
+    case .apiDisabled: return "apiDisabled(未授权辅助功能)"
+    case .noValue: return "noValue"
+    case .parameterizedAttributeUnsupported: return "parameterizedAttributeUnsupported"
+    case .notEnoughPrecision: return "notEnoughPrecision"
+    @unknown default: return "unknown(\(e.rawValue))"
+    }
+}
+
 /// 把元素身上所有能读出来的属性列一遍（诊断用，用来发现 AXDOMClassList 这类非标准属性）
 func axAllAttributes(_ el: AXUIElement) -> [String] {
     var names: CFArray?
@@ -79,7 +126,15 @@ func axAllAttributes(_ el: AXUIElement) -> [String] {
 
 /// 取某个进程当前焦点元素的指纹。无辅助功能权限时返回 nil。
 func focusedFingerprint(pid: pid_t) -> FocusFingerprint? {
-    guard let cur0 = focusedElement(pid: pid) else { return nil }
+    guard let cur = focusedElement(pid: pid) else { return nil }
+    return fingerprintOfElement(cur)
+}
+
+/// 从一个已拿到的 AX 元素采集指纹。
+///
+/// 单独拆出来是为了让重试逻辑复用：重试时元素已经在手上了，
+/// 不必再从 pid 走一遍 `AXFocusedUIElement`。
+func fingerprintOfElement(_ cur0: AXUIElement) -> FocusFingerprint? {
     var cur = cur0
 
     var fp = FocusFingerprint()
@@ -90,6 +145,12 @@ func focusedFingerprint(pid: pid_t) -> FocusFingerprint? {
     fp.placeholder = axString(cur, kAXPlaceholderValueAttribute)
     if fp.title.isEmpty { fp.title = axString(cur, kAXDescriptionAttribute) }
     fp.domClasses = axStringArray(cur, "AXDOMClassList")
+
+    // 连 role 都读不出来，说明这个元素是坏的（应用正在重建 AX 树），
+    // 交给上层重试，别拿一个空指纹去匹配规则 —— 空指纹会匹配到一切
+    if fp.role.isEmpty && fp.domClasses.isEmpty && fp.identifier.isEmpty && fp.title.isEmpty {
+        return nil
+    }
 
     // 往上爬，收集祖先的标题 / identifier —— 面板名、webview 名往往在这里
     for _ in 0..<12 {

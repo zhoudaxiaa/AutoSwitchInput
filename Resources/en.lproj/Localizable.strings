@@ -50,6 +50,7 @@
 /* Quick panel */
 "panel.app" = "This app";
 "panel.spot" = "Here · %@";
+"panel.spot.last" = "Here (last seen) · %@";
 "panel.unknown" = "Unknown app";
 "panel.settings" = "Open Settings…";
 "panel.quit" = "Quit";
@@ -60,5 +61,6 @@
 "spot.editor" = "Editor";
 "spot.chat" = "Chat";
 "spot.unknown" = "Unrecognized";
+"spot.reading" = "Reading…";
 "spot.na" = "Unavailable";
 "spot.needAX" = "Needs Accessibility";

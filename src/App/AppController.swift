@@ -169,6 +169,12 @@ final class AppController: NSObject, AppActions {
         lastActivationAt = Date()
         activationBundle = bundle
 
+        // 提前让 Electron 类应用开始构建无障碍树：
+        // 它们的树是按需建的，不先打招呼，稍后读焦点只会拿到 noValue
+        if config.hasContextRules(for: bundle) {
+            FocusProbe.prepare(bundle: bundle)
+        }
+
         triggers.attachAXObserver(pid: app.processIdentifier, bundle: bundle)
         engine.scheduleApply(reason: "激活", delay: 0.04)
     }

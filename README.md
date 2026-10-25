@@ -237,6 +237,7 @@ src/
 - **「该用哪个输入法」只有 `SourceResolver` 一个答案来源**。激活、焦点变化、看门狗三条路径都必须走它，否则看门狗会把细分规则刚切好的结果又纠回去。
 - **`ContextRuleEngine` 是纯函数**，不读配置、不碰 UI，规则匹配的所有边界情况都集中在一处。
 - **绝不缓存 `TISInputSource`**。输入法进程重启后旧引用会静默失效，这是同类工具「经常失灵」的根因。
+- **Electron 的无障碍树要主动叫它建**。Chromium 只在客户端请求时才搭 AX 树，否则 `AXFocusedUIElement` 一律返回 `noValue`（`AXFocusedWindow` 却是好的，很容易误判成「应用不支持 AX」）。所以 `FocusProbe` 会在应用激活时设一次 `AXManualAccessibility`，读取时再做有限重试。
 
 图标是代码画的，改了 `tools/make_icon.swift` 之后跑 `./tools/make_icon.sh` 就会重新生成全套尺寸。
 
@@ -245,7 +246,8 @@ src/
 ```bash
 AutoSwitchInput --window-snapshot out.png   # 把主窗口渲染成 PNG
 AutoSwitchInput --panel-snapshot out.png    # 把菜单栏面板渲染成 PNG
-AutoSwitchInput --ax-dump out.txt <bundle>  # 导出某应用当前焦点元素的 AX 特征
+AutoSwitchInput --ax-dump out.txt <bundle>  # 导出某应用当前焦点元素的 AX 特征（含重试结果）
+AutoSwitchInput --ax-deep out.txt <bundle>  # 逐项探测 AX 属性，定位「为什么读不到焦点」
 AutoSwitchInput --popover-demo              # 验证 popover 能否弹出
 AutoSwitchInput --silent                    # 启动时不弹设置窗口（开机启动用）
 ```

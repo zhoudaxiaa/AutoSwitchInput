@@ -17,6 +17,8 @@ final class QuickPanelController: NSViewController {
     private let spotLabel = NSTextField(labelWithString: "")
     private let spotPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private var currentFingerprint: FocusFingerprint?
+    /// 每次刷新 +1：异步补读回来时，如果面板已经重新刷过就丢弃结果
+    private var spotToken = 0
     /// 截图预览用：伪造一个焦点指纹（正常运行时永远是 nil）
     var demoFingerprint: FocusFingerprint?
 
@@ -190,33 +192,84 @@ final class QuickPanelController: NSViewController {
         preferredContentSize = NSSize(width: panelWidth, height: h)
     }
 
-    /// 「此处」那一行：把此刻焦点所在的位置单独指一个输入法
+    /// 「此处」那一行：把此刻焦点所在的位置单独指一个输入法。
+    ///
+    /// 抓不到焦点不等于「没有位置」。Electron 应用的 AX 树是懒建的，
+    /// 点菜单栏图标这一瞬间去问，经常先拿到一个「目标未应答」，
+    /// 隔几十毫秒再问就有了。所以这里分三步：同步重试 → 异步补读 → 上次位置兜底。
     private func refreshSpot(bundle: String?) {
         spotPopup.removeAllItems()
+        spotToken &+= 1
+        let token = spotToken
+        currentFingerprint = nil
 
-        // 只有拿到焦点元素才知道「此处」是哪儿
-        var fp: FocusFingerprint?
-        if let b = bundle, b != kBundleSelf {
-            fp = FocusProbe.fingerprint(ofRunning: b)
-        }
-        // 截图预览用：前台是本进程，读不到目标应用的焦点元素
-        if fp == nil { fp = demoFingerprint }
-        currentFingerprint = fp
-
-        guard let b = bundle, b != kBundleSelf, let fp = fp, let app = app else {
-            spotLabel.stringValue = LF("panel.spot", L("spot.unknown"))
-            spotLabel.textColor = .tertiaryLabelColor
-            spotPopup.addItem(withTitle: AXIsProcessTrusted()
-                              ? L("spot.na") : L("spot.needAX"))
-            spotPopup.lastItem?.representedObject = nil
-            spotPopup.selectItem(at: 0)
-            spotPopup.isEnabled = false
+        guard let b = bundle, b != kBundleSelf else {
+            if let demo = demoFingerprint {
+                applySpot(demo, bundle: "", interactive: true)
+            } else {
+                showSpotUnavailable(interactive: false)
+            }
             return
         }
 
-        let matched = ContextRuleEngine.best(in: app.config.contextRules(for: b), for: fp)
-        spotLabel.textColor = .labelColor
-        spotLabel.stringValue = LF("panel.spot",
+        // 截图预览用：显式指定了伪造指纹就以它为准
+        if let demo = demoFingerprint {
+            applySpot(demo, bundle: b, interactive: true)
+            return
+        }
+
+        if let fp = FocusProbe.fingerprint(ofRunning: b) {
+            applySpot(fp, bundle: b, interactive: true)
+            return
+        }
+
+        // 应用没在运行就没有焦点可读，别让用户看「读取中」干等
+        guard FocusProbe.runningApp(bundle: b) != nil else {
+            showSpotUnavailable(interactive: false)
+            return
+        }
+
+        // 还没放弃：先显示「读取中」，后台继续问
+        spotLabel.textColor = .tertiaryLabelColor
+        spotLabel.stringValue = LF("panel.spot", L("spot.reading"))
+        spotPopup.addItem(withTitle: L("spot.na"))
+        spotPopup.lastItem?.representedObject = nil
+        spotPopup.selectItem(at: 0)
+        spotPopup.isEnabled = false
+        resizeToFit()
+
+        FocusProbe.retryAsync(bundle: b) { [weak self] fp in
+            guard let self = self, token == self.spotToken else { return }
+            self.applySpot(fp, bundle: b, interactive: true)
+        } onGiveUp: { [weak self] in
+            guard let self = self, token == self.spotToken else { return }
+            // 彻底读不到时，退而展示上一次读到的位置（明确标注「上次」，
+            // 并且禁用下拉 —— 不能拿一个可能过期的位置去写规则）
+            if let cached = FocusProbe.cached(for: b) {
+                self.applySpot(cached, bundle: b, interactive: false, labelKey: "panel.spot.last")
+            } else {
+                self.showSpotUnavailable(interactive: false)
+            }
+        }
+    }
+
+    /// 内容变了之后重算面板高度（异步补读回来时文字长度会变）
+    private func resizeToFit() {
+        view.layoutSubtreeIfNeeded()
+        let h = view.fittingSize.height
+        if abs(preferredContentSize.height - h) > 0.5 {
+            preferredContentSize = NSSize(width: panelWidth, height: h)
+        }
+    }
+
+    /// 位置读到了，铺内容
+    private func applySpot(_ fp: FocusFingerprint, bundle: String,
+                           interactive: Bool, labelKey: String = "panel.spot") {
+        currentFingerprint = interactive ? fp : nil
+
+        let matched = app.flatMap { ContextRuleEngine.best(in: $0.config.contextRules(for: bundle), for: fp) }
+        spotLabel.textColor = interactive ? .labelColor : .secondaryLabelColor
+        spotLabel.stringValue = LF(labelKey,
                                    ContextRuleEngine.displayLabel(fp, matchedNote: matched?.note))
 
         spotPopup.addItem(withTitle: L("spot.follow"))
@@ -234,7 +287,21 @@ final class QuickPanelController: NSViewController {
         } else {
             spotPopup.selectItem(at: 0)
         }
-        spotPopup.isEnabled = true
+        spotPopup.isEnabled = interactive
+        resizeToFit()
+    }
+
+    /// 真的没有位置可用：区分「没授权」和「应用没应答」
+    private func showSpotUnavailable(interactive: Bool) {
+        currentFingerprint = nil
+        spotLabel.stringValue = LF("panel.spot", L("spot.unknown"))
+        spotLabel.textColor = .tertiaryLabelColor
+        spotPopup.addItem(withTitle: AXIsProcessTrusted()
+                          ? L("spot.na") : L("spot.needAX"))
+        spotPopup.lastItem?.representedObject = nil
+        spotPopup.selectItem(at: 0)
+        spotPopup.isEnabled = false
+        resizeToFit()
     }
 
     /// 只更新"当前输入法"那一行，避免面板打开时重置用户的选项
