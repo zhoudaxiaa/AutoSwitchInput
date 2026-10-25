@@ -15,10 +15,13 @@ final class TriggerCenter: NSObject {
     var onFocusChanged: (() -> Void)?
     var onInputSourceChanged: (() -> Void)?
 
+    private var started = false
     private var axObserver: AXObserver?
     private var observedPID: pid_t = 0
 
     func start() {
+        guard !started else { return }
+        started = true
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
             selector: #selector(appActivated(_:)),
@@ -38,6 +41,24 @@ final class TriggerCenter: NSObject {
             .deliverImmediately)
     }
 
+    func stop() {
+        guard started else { return }
+        started = false
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        CFNotificationCenterRemoveObserver(CFNotificationCenterGetDistributedCenter(),
+            Unmanaged.passUnretained(self).toOpaque(),
+            CFNotificationName(kTISNotifySelectedKeyboardInputSourceChanged), nil)
+        resetAXObserver()
+    }
+
+    func resetAXObserver() {
+        if let observer = axObserver {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+        }
+        axObserver = nil
+        observedPID = 0
+    }
+
     @objc private func appActivated(_ note: Notification) {
         guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
         onAppActivated?(app)
@@ -45,13 +66,21 @@ final class TriggerCenter: NSObject {
 
     /// 把 AX 观察者挂到当前前台应用上（换了应用就重新挂）
     func attachAXObserver(pid: pid_t, bundle: String) {
+        guard AXIsProcessTrusted() else {
+            if let observer = axObserver {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+            }
+            axObserver = nil
+            observedPID = 0
+            return
+        }
         guard pid > 0, pid != observedPID else { return }
 
         if let old = axObserver {
-            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(old), .defaultMode)
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(old), .commonModes)
             axObserver = nil
         }
-        observedPID = pid
+        observedPID = 0
 
         var obs: AXObserver?
         let err = AXObserverCreate(pid, { _, _, _, refcon in
@@ -71,9 +100,11 @@ final class TriggerCenter: NSObject {
         let e2 = AXObserverAddNotification(obs, appEl, kAXFocusedWindowChangedNotification as CFString, refcon)
         if e1 != .success && e2 != .success {
             log("AX 通知注册失败(\(bundle))：\(e1.rawValue)/\(e2.rawValue)（多半是未授权辅助功能）")
+            return
         }
 
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(obs), .defaultMode)
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .commonModes)
         axObserver = obs
+        observedPID = pid
     }
 }

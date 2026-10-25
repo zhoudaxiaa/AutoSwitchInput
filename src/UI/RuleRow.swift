@@ -14,11 +14,11 @@ final class RuleRow: NSView {
 
     private let popup = NSPopUpButton(frame: .zero, pullsDown: false)
 
-    init(bundle: String, ruleID: String?, sources: [(id: String, name: String)], installed: Bool) {
+    init(bundle: String, ruleID: String?, sources: [(id: String, name: String)], installed: Bool, displayName: String? = nil, detail: String? = nil, context: Bool = false, removalEnabled: Bool = true) {
         self.bundleID = bundle
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        heightAnchor.constraint(equalToConstant: 48).isActive = true
+        heightAnchor.constraint(equalToConstant: context ? 44 : 48).isActive = true
 
         let info = appDisplayInfo(for: bundle)
 
@@ -30,12 +30,12 @@ final class RuleRow: NSView {
         icon.widthAnchor.constraint(equalToConstant: 26).isActive = true
         icon.heightAnchor.constraint(equalToConstant: 26).isActive = true
 
-        let nameLabel = NSTextField(labelWithString: info.name)
+        let nameLabel = NSTextField(labelWithString: displayName ?? info.name)
         nameLabel.font = .systemFont(ofSize: 13, weight: .medium)
         nameLabel.lineBreakMode = .byTruncatingTail
         nameLabel.textColor = installed ? .labelColor : .secondaryLabelColor
 
-        let idLabel = NSTextField(labelWithString: installed ? bundle : bundle + L("row.missing"))
+        let idLabel = NSTextField(labelWithString: detail ?? (installed ? bundle : bundle + L("row.missing")))
         idLabel.font = .systemFont(ofSize: 10)
         idLabel.textColor = installed ? .secondaryLabelColor : .tertiaryLabelColor
         idLabel.lineBreakMode = .byTruncatingMiddle
@@ -62,12 +62,18 @@ final class RuleRow: NSView {
         } else {
             popup.selectItem(at: 0)
         }
+        if let rid = ruleID, !sources.contains(where: { $0.id == rid }) {
+            popup.addItem(withTitle: LF("source.unavailable", sourceName(rid) ?? rid))
+            popup.lastItem?.representedObject = rid
+            popup.selectItem(at: popup.numberOfItems - 1)
+        }
         popup.target = self
         popup.action = #selector(popupChanged)
         popup.widthAnchor.constraint(equalToConstant: 148).isActive = true
         popup.setContentHuggingPriority(.required, for: .horizontal)
 
         let minus = NSButton(title: "−", target: self, action: #selector(removeTapped))
+        minus.isEnabled = removalEnabled
         minus.isBordered = false
         minus.font = .systemFont(ofSize: 16)
         minus.contentTintColor = .tertiaryLabelColor
@@ -84,7 +90,7 @@ final class RuleRow: NSView {
         h.orientation = .horizontal
         h.alignment = .centerY
         h.spacing = 10
-        h.edgeInsets = NSEdgeInsets(top: 0, left: 14, bottom: 0, right: 12)
+        h.edgeInsets = NSEdgeInsets(top: 0, left: context ? 30 : 14, bottom: 0, right: 12)
         h.translatesAutoresizingMaskIntoConstraints = false
         addSubview(h)
         NSLayoutConstraint.activate([

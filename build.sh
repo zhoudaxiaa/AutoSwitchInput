@@ -32,13 +32,10 @@ BIN="$APP/Contents/MacOS/AutoSwitchInput"
 if [ "$UNIVERSAL" = "1" ]; then
     TMP="$(mktemp -d)"
     trap 'rm -rf "$TMP"' EXIT
-    if compile_slice arm64 "$TMP/arm64" 2>/dev/null && compile_slice x86_64 "$TMP/x86_64" 2>/dev/null; then
-        lipo -create "$TMP/arm64" "$TMP/x86_64" -output "$BIN"
-        echo "    通用二进制: $(lipo -archs "$BIN")"
-    else
-        echo "    交叉编译失败，回退到本机架构"
-        compile_slice "$(uname -m)" "$BIN"
-    fi
+    compile_slice arm64 "$TMP/arm64"
+    compile_slice x86_64 "$TMP/x86_64"
+    lipo -create "$TMP/arm64" "$TMP/x86_64" -output "$BIN"
+    echo "    通用二进制: $(lipo -archs "$BIN")"
 else
     compile_slice "$(uname -m)" "$BIN"
 fi
@@ -63,7 +60,8 @@ if codesign --force --sign "$SIGN_ID" --identifier com.local.autoswitchinput "$A
     echo "    证书: $SIGN_ID"
 else
     codesign --force --sign - --identifier com.local.autoswitchinput "$APP"
-    echo "    证书: ad-hoc（未找到 $SIGN_ID）"
+    echo "    警告：使用 ad-hoc 临时签名（未找到 $SIGN_ID）。更新已安装版本后，辅助功能授权可能失效。" >&2
+    echo "    如位置识别不可用：在系统设置 → 辅助功能中关闭再开启本应用，必要时移除旧条目并重新添加。" >&2
 fi
 codesign --verify "$APP" && echo "签名校验通过"
 

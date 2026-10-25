@@ -21,8 +21,9 @@ final class AppController: NSObject, AppActions {
     private var isFirstRun = false
 
     /// 激活时间与激活应用：用来区分「用户手动切换」和「应用自己在恢复输入法」
-    private var lastActivationAt: Date = .distantPast
-    private var activationBundle: String?
+    private var learningPolicy = LearningPolicy()
+    private var refreshScheduled = false
+    private var accessibilityTrusted = false
 
     // MARK: - 启动与退出
 
@@ -54,7 +55,13 @@ final class AppController: NSObject, AppActions {
         }
 
         promptAccessibilityOnce()
+        accessibilityTrusted = AXIsProcessTrusted()
+        // 更新签名可能使原授权失效：有位置规则时必须明确展示恢复入口。
+        if !accessibilityTrusted && !config.contexts.isEmpty && !CommandLine.arguments.contains("--silent") {
+            settings.show()
+        }
 
+        if let front = NSWorkspace.shared.frontmostApplication { handleAppActivated(front) }
         engine.startWatchdog()
         refreshStatusTitle()
     }
@@ -62,6 +69,7 @@ final class AppController: NSObject, AppActions {
     func shutdown() {
         guard isPrimary else { return }
         engine.stopWatchdog()
+        triggers.stop()
         saveConfig()
         log("=== 退出 ===")
     }
@@ -86,7 +94,26 @@ final class AppController: NSObject, AppActions {
 
     func saveConfig() {
         guard isPrimary else { return }
+        config = config.validated()
         ConfigStore.save(config)
+    }
+
+    /// 配置变更统一取消旧任务、持久化，并在下一轮事件循环合并刷新。
+    /// 避免在下拉控件派发 action 时销毁控件自身。
+    func commitConfig(reason: String, apply: Bool = true) {
+        engine.cancelPendingApply()
+        saveConfig()
+        if !refreshScheduled {
+            refreshScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.refreshScheduled = false
+                self.refreshStatusTitle()
+                self.settings.reload()
+                self.statusBar.refreshPanel()
+            }
+        }
+        if apply { engine.scheduleApply(reason: reason) }
     }
 
     func setAppRule(bundle: String, source: String?) {
@@ -95,27 +122,21 @@ final class AppController: NSObject, AppActions {
         } else {
             config.apps.removeValue(forKey: bundle)
         }
-        saveConfig()
-        statusBar.refreshPanel()
-        engine.scheduleApply(reason: "应用规则变更")
+        engine.clearUserOverride()
+        commitConfig(reason: "应用规则变更")
     }
 
     // MARK: - 开关
 
     func setEnabled(_ on: Bool) {
         config.enabled = on
-        saveConfig()
-        refreshStatusTitle()
-        settings.reload()
-        statusBar.refreshPanel()
+        commitConfig(reason: "启用状态变更", apply: on)
         log("enabled = \(config.enabled)")
-        if on { engine.scheduleApply(reason: "启用") }
     }
 
     func setLearn(_ on: Bool) {
         config.learn = on
-        saveConfig()
-        settings.reload()
+        commitConfig(reason: "学习状态变更", apply: false)
     }
 
     var loginInstalled: Bool { LaunchAgent.isInstalled }
@@ -127,7 +148,7 @@ final class AppController: NSObject, AppActions {
 
     func setLanguage(_ code: String?) {
         config.language = code
-        saveConfig()
+        commitConfig(reason: "语言变更", apply: false)
     }
 
     // MARK: - 界面与外部动作
@@ -157,7 +178,29 @@ final class AppController: NSObject, AppActions {
             self?.engine.scheduleApply(reason: "焦点变化", delay: 0.08)
         }
         triggers.onInputSourceChanged = { [weak self] in self?.handleInputSourceChanged() }
+        engine.onWatchdog = { [weak self] in
+            self?.refreshAccessibilityStatus()
+            guard let front = NSWorkspace.shared.frontmostApplication,
+                  let bundle = front.bundleIdentifier, bundle != kBundleSelf else { return }
+            self?.triggers.attachAXObserver(pid: front.processIdentifier, bundle: bundle)
+        }
         triggers.start()
+    }
+
+    private func refreshAccessibilityStatus() {
+        let trusted = AXIsProcessTrusted()
+        guard trusted != accessibilityTrusted else { return }
+        accessibilityTrusted = trusted
+        engine.cancelPendingApply()
+        FocusProbe.invalidate()
+        triggers.resetAXObserver()
+        settings.reload()
+        statusBar.refreshPanel()
+        log(trusted ? "✓ 辅助功能授权已恢复，重新挂载焦点观察" : "⚠️ 辅助功能授权已失效，位置规则暂不可用")
+        if trusted, let front = NSWorkspace.shared.frontmostApplication,
+           let bundle = front.bundleIdentifier, bundle != kBundleSelf {
+            FocusProbe.prepare(bundle: bundle)
+        }
     }
 
     private func handleAppActivated(_ app: NSRunningApplication) {
@@ -166,8 +209,8 @@ final class AppController: NSObject, AppActions {
         lastExternalBundle = bundle
         log("→ 激活 \(bundle) (pid \(app.processIdentifier))")
 
-        lastActivationAt = Date()
-        activationBundle = bundle
+        learningPolicy.activated(bundle)
+        engine.clearUserOverride()
 
         // 提前让 Electron 类应用开始构建无障碍树：
         // 它们的树是按需建的，不先打招呼，稍后读焦点只会拿到 noValue
@@ -191,25 +234,15 @@ final class AppController: NSObject, AppActions {
         if engine.isSelfInflicted(current) { return }
         engine.clearExpected()
 
-        guard config.enabled, config.learn, let current = current else { return }
-        guard let bundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return }
-        guard bundle != kBundleSelf, !config.excluded.contains(bundle) else { return }
+        guard !secureInputActive(), let current = current,
+              let bundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+              learningPolicy.shouldRespectChange(bundle: bundle, config: config, at: now) else { return }
 
-        // 这个应用有细分规则时，输入法是由「位置」决定的，
-        // 学到的当前值只会污染应用级兜底规则
-        guard !config.hasContextRules(for: bundle) else { return }
-
-        // 激活后 1 秒内的变更属于「系统/应用自己在恢复输入法」，不是用户操作
-        guard now.timeIntervalSince(lastActivationAt) > 1.0 else { return }
-        guard bundle == activationBundle else { return }
-
-        // 默认只修正已有规则，不凭空新建（避免规则被污染）
-        guard config.apps[bundle] != nil || config.learnCreatesRules else { return }
-
-        engine.markUserOverride(for: 2.5)
+        engine.markUserOverride(bundle: bundle, for: 2.5)
+        guard learningPolicy.shouldLearn(bundle: bundle, config: config) else { return }
         if config.apps[bundle] != current {
             config.apps[bundle] = current
-            saveConfig()
+            commitConfig(reason: "手动学习", apply: false)
             log("✎ 学习：\(bundle) → \(current)")
         }
     }

@@ -18,7 +18,8 @@ protocol AppActions: AnyObject {
 
     func setAppRule(bundle: String, source: String?)
     func setSpotRule(bundle: String, source: String?, fp: FocusFingerprint)
-    func removeContextRule(at index: Int)
+    func removeContextRule(id: UUID)
+    func setContextSource(id: UUID, source: String)
     func clearContextRules(for bundle: String)
 
     // MARK: 开关

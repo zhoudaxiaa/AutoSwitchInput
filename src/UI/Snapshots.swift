@@ -15,7 +15,7 @@ enum Snapshots {
         win.makeKeyAndOrderFront(nil)
         // 从终端 / LaunchServices 拉起时第一次 activate 常被系统忽略，多试几次
         for _ in 0..<12 {
-            NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+            NSRunningApplication.current.activate(options: [])
             NSApp.activate(ignoringOtherApps: true)
             win.makeKey()
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))

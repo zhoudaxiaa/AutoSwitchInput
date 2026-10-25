@@ -11,6 +11,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var loginCheck: NSButton!
     private var languagePopup: NSPopUpButton!
     private var statusLabel: NSTextField!
+    private var accessibilityButton: NSButton!
     private var emptyLabel: NSTextField!
     private var cleanBtn: NSButton!
 
@@ -67,6 +68,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        accessibilityButton = NSButton(title: L("btn.accessibility"), target: self,
+                                       action: #selector(openAccessibilitySettings))
+        accessibilityButton.bezelStyle = .rounded
+        accessibilityButton.controlSize = .small
+        accessibilityButton.translatesAutoresizingMaskIntoConstraints = false
+        accessibilityButton.setContentHuggingPriority(.required, for: .horizontal)
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         listStack = NSStackView()
         listStack.orientation = .vertical
@@ -183,7 +192,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         settingsRow.spacing = 8
         settingsRow.translatesAutoresizingMaskIntoConstraints = false
 
-        for v in [topRow, statusLabel, box, actionRow, footerSep, settingsRow, emptyLabel] as [NSView] {
+        for v in [topRow, statusLabel, accessibilityButton, box, actionRow, footerSep, settingsRow, emptyLabel] as [NSView] {
             content.addSubview(v)
         }
 
@@ -193,7 +202,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             topRow.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
 
             statusLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            statusLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            statusLabel.trailingAnchor.constraint(equalTo: accessibilityButton.leadingAnchor, constant: -8),
+            accessibilityButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            accessibilityButton.centerYAnchor.constraint(equalTo: statusLabel.centerYAnchor),
             statusLabel.topAnchor.constraint(equalTo: topRow.bottomAnchor, constant: 8),
 
             box.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
@@ -235,11 +246,16 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             languagePopup.selectItem(at: 0)
         }
 
-        let ax = AXIsProcessTrusted() ? L("status.ax.granted") : L("status.ax.denied")
+        let trusted = AXIsProcessTrusted()
+        let ax = trusted ? L("status.ax.granted") : L("status.ax.denied")
+        accessibilityButton.title = L(trusted ? "btn.accessibility.manage" : "btn.accessibility")
+        accessibilityButton.toolTip = L("accessibility.repair.hint")
+        statusLabel.textColor = trusted ? .secondaryLabelColor : .systemOrange
+        statusLabel.toolTip = trusted ? nil : L("accessibility.repair.hint")
         statusLabel.stringValue = LF("status.line",
                                      LF("status.current", currentSourceName()),
                                      ax,
-                                     LF("status.rules", app.config.apps.count))
+                                     LF("status.rules", app.config.apps.count + app.config.contexts.count))
 
         for v in listStack.arrangedSubviews {
             listStack.removeArrangedSubview(v)
@@ -247,7 +263,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
 
         let sources = typeableSources()
-        let bundles = app.config.apps.keys.sorted {
+        let bundles = app.config.ruleBundles.sorted {
             appDisplayInfo(for: $0).name.localizedStandardCompare(appDisplayInfo(for: $1).name) == .orderedAscending
         }
 
@@ -259,19 +275,31 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
         for b in bundles {
             let row = RuleRow(bundle: b, ruleID: app.config.apps[b], sources: sources,
-                              installed: appExists(b))
-            row.onRemove = { [weak self] in
+                              installed: appExists(b), removalEnabled: app.config.apps[b] != nil)
+            row.onRemove = {
                 app.setAppRule(bundle: b, source: nil)
                 log("✎ 删除规则 \(b)（剩余 \(app.config.apps.count) 条）")
-                self?.reload()
             }
-            row.onChange = { [weak self] newID in
+            row.onChange = { newID in
                 app.setAppRule(bundle: b, source: newID)
                 log("✎ 改规则 \(b) → \(newID ?? "不设置")")
-                self?.reload()
             }
             listStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
+
+            for rule in app.config.contextRules(for: b) {
+                let details = ContextRuleEngine.conditionDescription(rule)
+                let spot = RuleRow(bundle: b, ruleID: rule.source, sources: sources,
+                                   installed: appExists(b), displayName: "↳ " + (rule.note ?? L("spot.unknown")),
+                                   detail: details, context: true)
+                spot.onRemove = { app.removeContextRule(id: rule.id) }
+                spot.onChange = { source in
+                    if let source = source { app.setContextSource(id: rule.id, source: source) }
+                    else { app.removeContextRule(id: rule.id) }
+                }
+                listStack.addArrangedSubview(spot)
+                spot.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
+            }
 
             let line = NSBox()
             line.boxType = .separator
@@ -283,12 +311,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     @objc private func toggleEnabled() {
         app?.setEnabled(enabledSwitch.state == .on)
-        reload()
     }
 
     @objc private func toggleLearn() {
         app?.setLearn(learnSwitch.state == .on)
-        reload()
     }
 
     @objc private func toggleLogin() {
@@ -326,11 +352,16 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    @objc private func openAccessibilitySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     @objc private func refreshTapped() { reload() }
 
     @objc private func cleanInvalid() {
         guard let app = app else { return }
-        let stale = app.config.apps.keys.filter { !appExists($0) }.sorted()
+        let stale = app.config.ruleBundles.filter { !appExists($0) }.sorted()
         guard !stale.isEmpty else { NSSound.beep(); return }
 
         let alert = NSAlert()
@@ -340,7 +371,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         alert.addButton(withTitle: L("alert.clean.ok"))
         alert.addButton(withTitle: L("alert.cancel"))
         if alert.runModal() == .alertFirstButtonReturn {
-            for b in stale { app.setAppRule(bundle: b, source: nil) }
+            for b in stale {
+                app.setAppRule(bundle: b, source: nil)
+                app.clearContextRules(for: b)
+            }
             log("✎ 清理无效规则 \(stale.count) 条：\(stale.joined(separator: ", "))（剩余 \(app.config.apps.count) 条）")
             reload()
         }

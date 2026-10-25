@@ -2,7 +2,7 @@
 
 [![Build](https://github.com/zhoudaxiaa/AutoSwitchInput/actions/workflows/build.yml/badge.svg)](https://github.com/zhoudaxiaa/AutoSwitchInput/actions/workflows/build.yml)
 [![Release](https://img.shields.io/github/v/release/zhoudaxiaa/AutoSwitchInput)](https://github.com/zhoudaxiaa/AutoSwitchInput/releases)
-[![Platform](https://img.shields.io/badge/macOS-12%2B-blue)](https://github.com/zhoudaxiaa/AutoSwitchInput)
+[![Platform](https://img.shields.io/badge/macOS-13%2B-blue)](https://github.com/zhoudaxiaa/AutoSwitchInput)
 [![License](https://img.shields.io/github/license/zhoudaxiaa/AutoSwitchInput)](LICENSE)
 
 一个轻量的 macOS 菜单栏小工具：**为每个应用记住一个输入法，切过去时自动切回来。**
@@ -122,6 +122,10 @@ open dist/AutoSwitchInput.app
 
 授权之后会额外获得"焦点级触发"：同一个应用内不同窗口/输入框切换时也能纠正。系统设置 → 隐私与安全性 → 辅助功能 → 勾选 AutoSwitchInput 即可。应用只会提示一次，不会反复弹窗。
 
+**更新后突然无法区分 VS Code 编辑器和聊天框：**先看设置窗口的辅助功能状态。使用 ad-hoc 临时签名重新构建后，macOS 可能不再认可旧授权，即使系统设置中的开关看起来仍开着。请到“隐私与安全性 → 辅助功能”中关闭再开启 Auto Switch Input；若仍无效，移除旧条目后重新添加 `/Applications/AutoSwitchInput.app`。规则无需删除。设置窗口提供“恢复位置识别…”入口，授权变化后会自动清空旧焦点缓存、重新启用 Electron AX 树和挂载焦点监听。
+
+本机更新建议使用固定的签名证书，通过 `SIGN_IDENTITY` 指定；构建回退临时签名时会明确提示授权可能失效。代码无法替用户授予辅助功能权限。
+
 ## 配置文件
 
 ```
@@ -161,7 +165,11 @@ open dist/AutoSwitchInput.app
 
 `language` 可选 `null`（跟随系统）、`"zh-Hans"`、`"en"`。
 
-`contexts` 里每条规则的 `role` / `identifier` / `classContains` / `titleContains` 都是可选的，只校验填了的字段；越具体的规则越先匹配（`classContains` > `identifier` > `titleContains` > `role`）。
+`contexts` 的有效条件按 `classContains` → `identifier` → `role` / `titleContains` 选择：有 class 时只匹配 class；否则有 identifier 时只匹配 identifier；两者都没有才联合检查 role 和标题。排序、位置去重使用相同条件，空字符串不作为条件。
+
+新建位置规则使用 `classExact: true`，按完整 DOM class 匹配；旧配置省略该字段时继续子串匹配。每条位置规则拥有持久化 `id`，旧配置会自动补齐。设置窗口按应用展示应用规则和位置规则，暂时不可用的输入源会标注“不可用”，保留规则供修复。
+
+手动切换保护独立于“学习”开关：激活超过 1 秒后观察到外部切换，会在当前应用暂停纠正 2.5 秒；切换到其他应用即解除。由于 TIS 通知不携带操作来源，这仍是启发式判断。学习仅在开关开启、没有位置规则、且已有应用规则（或启用了自动创建）时更新应用规则。
 
 写入前会自动备份一份 `config.json.bak`，读取失败时自动回退到备份。
 
@@ -172,7 +180,7 @@ open dist/AutoSwitchInput.app
 | 问题 | 这里的做法 |
 | --- | --- |
 | 只有一个触发源，漏掉就失灵 | `NSWorkspace` 应用激活 + AX 焦点变化 + 1.5s 定时器，三路触发 |
-| 切换被目标应用抢回去 | 切换后在 60ms / 180ms / 450ms 各校验一次，不对就重试 |
+| 切换被目标应用抢回去 | 切换后等待 60ms 校验，若回滚则重试，再分别等待 180ms / 450ms 校验；最多重试 3 次 |
 | 缓存了 `TISInputSource` 引用 | **永不缓存**，每次按 ID 重新查；输入法重启后旧引用会变成死对象，静默失败 |
 | 把系统自己的切换误判成用户操作 | 记录 `expectedID` 和时间窗，激活后 1 秒内的变化不算用户操作 |
 | 安全键盘输入时切换导致输入丢失 | 检测 `IsSecureEventInputEnabled()`，密码框里不动 |
@@ -205,10 +213,12 @@ src/
 │   └── Loc.swift                  可切换 Bundle 的本地化
 ├── Input/                         与系统打交道的部分
 │   ├── InputSource.swift          TIS 封装（永不缓存输入源引用）
-│   ├── AXInspect.swift            焦点指纹、AX 属性读取
-│   ├── FocusProbe.swift           按「前台 / 运行中」两种口径抓焦点
+│   ├── AXInspect.swift            AX 属性读取、超时与指纹采集
+│   ├── FocusProbe.swift           后台读取、可取消重试、PID 校验、展示缓存
 │   └── AppCatalog.swift           应用图标、名称、是否安装
-├── Model/                         纯逻辑，可单测
+├── Model/                         领域规则、配置与输入源判定
+│   ├── FocusFingerprint.swift     焦点指纹数据
+│   ├── LearningPolicy.swift       手动保护与学习策略
 │   ├── Config.swift               Config / ContextRule
 │   ├── ConfigStore.swift          读写 + 备份 + 旧版迁移
 │   ├── ContextRuleEngine.swift    规则匹配、生成、归一化
@@ -242,6 +252,14 @@ src/
 - **位置撞车时用「差异定位」，不要靠类名黑名单**。通用类名单永远漏项（`showUnused` 就这么漏过一次）。真正可靠的办法是：每条位置规则存一份 `signature`（保存时那处的祖先链快照）；新位置若和已有规则撞车，就把两条链摆在一起比，各自退到「只有自己有」的那个 class。通用类在两条链里都有，会自动落进公共部分被跳过 —— 不需要知道它们叫什么。
   - 撞车必须**双向收窄**：只改新位置不够，旧规则还留在原地继续吃，就成了「改一个两边一起变」。
   - 老规则没有快照时，至少用它已用的 class 占位（`pseudoSignature`），配合 specificity 降权兜底。
+
+运行 `./test.sh` 验证规则优先级、空条件、位置冲突、旧配置迁移、备份恢复与失败保护，以及暂停、手动保护、PID 变化、迟到 AX 结果等竞态。测试使用临时配置和模拟输入源，不修改实际输入法或用户配置。CI 在构建前执行这些验证。
+
+配置变更统一走 `commitConfig`：先使旧切换任务失效，再保存并合并刷新 UI。每次重试都会检查启用状态、安全输入、应用 PID 和最新目标。AX 读取在后台串行队列进行，缓存只允许展示；有位置规则但读取失败时本轮不切换，等待下一事件。AX 观察注册失败不会标记为成功，看门狗会重试挂载；退出时统一取消任务和观察者。
+
+构建最低版本统一为 macOS 13。默认构建必须生成 arm64 和 x86_64 两个切片，任何切片失败都会报错；本机开发可显式用 `./build.sh --native`。
+
+发布时递增 `Resources/Info.plist` 的 `CFBundleShortVersionString` 和 `CFBundleVersion`。推送到 main 后，CI 检测到版本号变化会先跑回归验证，再生成通用安装包、校验文件、版本标签和 Release；版本未变的提交只上传开发构建。也支持推送与 Info.plist 版本一致的 `v*` 标签发布，已有标签不会被 main 版本升级覆盖。
 
 图标是代码画的，改了 `tools/make_icon.swift` 之后跑 `./tools/make_icon.sh` 就会重新生成全套尺寸。
 

@@ -152,7 +152,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate {
                     let item = NSMenuItem(title: "\(r.note ?? "-") → \(sourceName(r.source) ?? r.source)",
                                           action: #selector(deleteContextRule(_:)), keyEquivalent: "")
                     item.target = self
-                    item.tag = i
+                    item.representedObject = r.id
                     sub.addItem(item)
                 }
                 sub.addItem(.separator())
@@ -219,7 +219,8 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate {
     @objc private func dumpFocusNow() { host?.dumpFocusNow() }
 
     @objc private func deleteContextRule(_ sender: NSMenuItem) {
-        host?.removeContextRule(at: sender.tag)
+        guard let id = sender.representedObject as? UUID else { return }
+        host?.removeContextRule(id: id)
     }
 
     @objc private func clearContexts() {

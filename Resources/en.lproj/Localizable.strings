@@ -64,3 +64,11 @@
 "spot.reading" = "Reading…";
 "spot.na" = "Unavailable";
 "spot.needAX" = "Needs Accessibility";
+
+"source.unavailable" = "Unavailable: %@";
+
+"btn.accessibility" = "Restore focus access…";
+
+"btn.accessibility.manage" = "Permissions…";
+
+"accessibility.repair.hint" = "An update can invalidate Accessibility access. In System Settings → Privacy & Security → Accessibility, toggle Auto Switch Input off and on. If needed, remove the old entry and add /Applications/AutoSwitchInput.app again. Focus detection resumes automatically; keep your existing rules.";

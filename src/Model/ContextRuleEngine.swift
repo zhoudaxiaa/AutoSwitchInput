@@ -37,44 +37,57 @@ enum ContextRuleEngine {
         genericClasses.contains { $0.caseInsensitiveCompare(c) == .orderedSame }
     }
 
-    /// 规则越具体越优先：具体 DOM class > identifier > 标题词 > 通用 class > 只看 role
+    static func nonempty(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        return value
+    }
+
+    /// 匹配、排序、位置去重共用同一组有效条件，避免忽略的字段影响优先级。
+    private enum Condition {
+        case domClass(String, Bool)
+        case identifier(String)
+        case fallback(String?, String?)
+    }
+
+    private static func condition(_ r: ContextRule) -> Condition {
+        if let c = nonempty(r.classContains) { return .domClass(c, r.classExact) }
+        if let i = nonempty(r.identifier) { return .identifier(i) }
+        return .fallback(nonempty(r.role), nonempty(r.titleContains))
+    }
+
     static func specificity(_ r: ContextRule) -> Int {
-        var s = 0
-        if let c = r.classContains, !c.isEmpty {
-            // 用通用容器当条件的位置规则，实际区分能力等同于「只看了 role」
-            s += isGenericClass(c) ? 2 : 8
+        switch condition(r) {
+        case let .domClass(c, exact): return isGenericClass(c) ? 2 : (exact ? 9 : 8)
+        case .identifier: return 4
+        case let .fallback(role, title): return (role == nil ? 0 : 1) + (title == nil ? 0 : 2)
         }
-        if let i = r.identifier, !i.isEmpty { s += 4 }
-        if let t = r.titleContains, !t.isEmpty { s += 2 }
-        if let role = r.role, !role.isEmpty { s += 1 }
-        return s
     }
 
     static func matches(_ r: ContextRule, _ fp: FocusFingerprint) -> Bool {
-        // 条件全空的规则等于匹配一切，直接忽略，免得一条空规则吃满整个应用
-        if r.role == nil && r.identifier == nil && r.titleContains == nil && r.classContains == nil {
-            return false
+        switch condition(r) {
+        case let .domClass(c, exact):
+            return (fp.domClasses + fp.ancestorClasses).contains {
+                exact ? $0.caseInsensitiveCompare(c) == .orderedSame : $0.localizedCaseInsensitiveContains(c)
+            }
+        case let .identifier(id):
+            return ([fp.identifier] + fp.ancestorIDs).contains { $0.localizedCaseInsensitiveContains(id) }
+        case let .fallback(role, title):
+            guard role != nil || title != nil else { return false }
+            if let role = role, fp.role != role { return false }
+            if let title = title {
+                return ([fp.title, fp.placeholder] + fp.ancestorTitles).contains { $0.localizedCaseInsensitiveContains(title) }
+            }
+            return true
         }
+    }
 
-        // 有 DOM class 就以它为准。role 会随 Electron / VS Code 版本漂移，
-        // 让它一起参与判断只会把本来能命中的规则否掉（「全是 ABC」就是这么来的）。
-        // 自身和祖先的 class 都要查：区分位置的信息往往在祖先身上。
-        if let c = r.classContains, !c.isEmpty {
-            let hay = fp.domClasses + fp.ancestorClasses
-            return hay.contains { $0.localizedCaseInsensitiveContains(c) }
+    static func conditionDescription(_ r: ContextRule) -> String {
+        switch condition(r) {
+        case let .domClass(c, exact): return "class \(exact ? "=" : "⊃") \(c)"
+        case let .identifier(id): return "identifier ⊃ \(id)"
+        case let .fallback(role, title):
+            return [role, title.map { "title ⊃ " + $0 }].compactMap { $0 }.joined(separator: " · ")
         }
-
-        if let role = r.role, !role.isEmpty, fp.role != role { return false }
-        if let id = r.identifier, !id.isEmpty {
-            let hit = fp.identifier.localizedCaseInsensitiveContains(id)
-                || fp.ancestorIDs.contains { $0.localizedCaseInsensitiveContains(id) }
-            if !hit { return false }
-        }
-        if let t = r.titleContains, !t.isEmpty {
-            let hay = ([fp.title, fp.placeholder] + fp.ancestorTitles).joined(separator: "\u{1F}")
-            if !hay.localizedCaseInsensitiveContains(t) { return false }
-        }
-        return true
     }
 
     /// 在候选规则里挑出最具体的一条；同分时保持配置里的先后顺序
@@ -90,9 +103,11 @@ enum ContextRuleEngine {
     /// 规则「指向哪个位置」的归一化标识：以最能区分位置的那个条件为准。
     /// 新旧规则用这个比较，避免同一个位置因为 role 不同而并存两条互相打架的规则。
     static func spotKey(_ r: ContextRule) -> String {
-        if let c = r.classContains, !c.isEmpty { return "class:" + c.lowercased() }
-        if let i = r.identifier, !i.isEmpty { return "id:" + i.lowercased() }
-        return "role:\(r.role ?? "")|\(r.titleContains ?? "")"
+        switch condition(r) {
+        case let .domClass(c, exact): return "class:\(exact):" + c.lowercased()
+        case let .identifier(i): return "id:" + i.lowercased()
+        case let .fallback(role, title): return "role:\(role ?? "")|\(title?.lowercased() ?? "")"
+        }
     }
 
     static func sameSpot(_ a: ContextRule, _ b: ContextRule) -> Bool {
@@ -109,6 +124,7 @@ enum ContextRuleEngine {
         var rule = ContextRule(bundle: bundle, source: source)
         if let cls = classOverride ?? distinguishingClass(fp) {
             rule.classContains = cls
+            rule.classExact = true
         } else if !fp.identifier.isEmpty {
             rule.identifier = fp.identifier
         } else {

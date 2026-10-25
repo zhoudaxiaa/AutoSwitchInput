@@ -64,3 +64,11 @@
 "spot.reading" = "读取中…";
 "spot.na" = "当前不可用";
 "spot.needAX" = "需辅助功能权限";
+
+"source.unavailable" = "不可用：%@";
+
+"btn.accessibility" = "恢复位置识别…";
+
+"btn.accessibility.manage" = "权限设置…";
+
+"accessibility.repair.hint" = "更新应用后辅助功能授权可能失效。请在系统设置 → 隐私与安全性 → 辅助功能中，关闭再开启 Auto Switch Input；若仍无效，移除旧条目并重新添加 /Applications/AutoSwitchInput.app。授权恢复后会自动重新识别，无需删除规则。";

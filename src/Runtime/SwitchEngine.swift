@@ -1,133 +1,154 @@
 import AppKit
 import Foundation
 
-/// 执行「把输入法切到目标值」并做多轮校验重试。
-///
-/// 为什么要重试：很多应用（Electron、部分 IME 宿主）会在激活瞬间把自己记着的
-/// 输入法再抢回去。切完就验、发现被回滚就再推一次，能盖住这类竞态。
-///
-/// 为什么要令牌：激活、焦点变化、看门狗三条路径可能同时发起切换，
-/// 各起一条延迟校验链并行推同一个值，会互相判定对方「被回滚」而反复重试。
-/// 每次发起切换换一个令牌，旧链看到令牌变了就自行退出，永远只有最新一条在跑。
+/// 所有外部操作均可注入，竞态验证无需操作系统输入法。
+struct SwitchEnvironment {
+    var now: () -> Date = { Date() }
+    var frontmost: () -> (bundle: String, pid: pid_t)? = {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              let bundle = app.bundleIdentifier else { return nil }
+        return (bundle, app.processIdentifier)
+    }
+    var currentSource: () -> String? = currentSourceID
+    var select: (String) -> Bool = selectSource
+    var secureInput: () -> Bool = secureInputActive
+    var resolve: (String, Config, @escaping (String?) -> Void) -> FocusProbe.Request? = {
+        SourceResolver.resolve(for: $0, config: $1, completion: $2)
+    }
+    var schedule: (Double, @escaping () -> Void) -> Void = { delay, action in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: action)
+    }
+}
+
+/// 主线程拥有状态。每次上下文变更立即使旧的防抖、AX 读取、校验链失效。
 final class SwitchEngine {
-
-    /// 由上层注入，每次判定时取最新配置
     var configProvider: () -> Config = { Config() }
-
+    var onWatchdog: (() -> Void)?
+    private let environment: SwitchEnvironment
     private var expectedID: String?
+    private var expectedBundle: String?
     private var expectedUntil: Date = .distantPast
-    private var userOverrideUntil: Date = .distantPast
+    private var overrideBundle: String?
+    private var overrideUntil: Date = .distantPast
     private var applyToken = 0
-    private var pending: DispatchWorkItem?
+    private var focusRequest: FocusProbe.Request?
+    private var resolvingToken: Int?
     private var watchdog: Timer?
 
-    // MARK: - 用户手动切换的保护窗
+    init(environment: SwitchEnvironment = SwitchEnvironment()) { self.environment = environment }
 
-    var isUserOverriding: Bool { Date() < userOverrideUntil }
-
-    /// 识别到用户手动切了输入法后，一段时间内别再跟他对着干
-    func markUserOverride(for seconds: TimeInterval) {
-        userOverrideUntil = Date().addingTimeInterval(seconds)
+    func markUserOverride(bundle: String, for seconds: TimeInterval) {
+        cancelPendingApply()
+        overrideBundle = bundle
+        overrideUntil = environment.now().addingTimeInterval(seconds)
     }
 
-    /// 这次输入法变化是不是我们自己刚造成的（用来避免把自己的切换学成用户操作）
+    func clearUserOverride() {
+        overrideBundle = nil
+        overrideUntil = .distantPast
+    }
+
+    private func isUserOverriding(_ bundle: String) -> Bool {
+        bundle == overrideBundle && environment.now() < overrideUntil
+    }
+
     func isSelfInflicted(_ current: String?) -> Bool {
-        guard let exp = expectedID, Date() < expectedUntil else { return false }
-        return current == exp
+        expectedID == current && expectedID != nil && environment.now() < expectedUntil
+            && environment.frontmost()?.bundle == expectedBundle
     }
 
-    func clearExpected() { expectedID = nil }
+    func clearExpected() { expectedID = nil; expectedBundle = nil }
 
-    // MARK: - 切换
+    func cancelPendingApply() {
+        applyToken &+= 1
+        focusRequest?.cancel()
+        focusRequest = nil
+        resolvingToken = nil
+        // 不清 expected：迟到的 TIS 通知仍属于自己的切换，不能学入规则。
+    }
 
     func scheduleApply(reason: String, delay: Double = 0.03) {
-        pending?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.applyNow(reason: reason) }
-        pending = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        cancelPendingApply()
+        let token = applyToken
+        environment.schedule(delay) { [weak self] in
+            guard let self = self, self.applyToken == token else { return }
+            self.applyNow(reason: reason)
+        }
     }
 
     func applyNow(reason: String) {
+        cancelPendingApply()
+        let token = applyToken
+        guard let target = environment.frontmost(), eligible(target.bundle) else { return }
+        resolve(bundle: target.bundle, token: token) { [weak self] desired in
+            guard let self = self, let desired = desired,
+                  self.isCurrent(bundle: target.bundle, pid: target.pid, token: token),
+                  self.environment.currentSource() != desired else { return }
+            log("⇄ [\(reason)] \(target.bundle) → \(desired)")
+            self.applyWithVerify(desired, bundle: target.bundle, pid: target.pid, attempt: 0, token: token)
+        }
+    }
+
+    private func eligible(_ bundle: String) -> Bool {
         let config = configProvider()
-        guard config.enabled else { return }
-        guard let front = NSWorkspace.shared.frontmostApplication,
-              let bundle = front.bundleIdentifier else { return }
-        guard bundle != kBundleSelf, !config.excluded.contains(bundle) else { return }
-        guard !isUserOverriding else { return }
-        guard let desired = SourceResolver.desired(for: bundle, config: config) else { return }
+        return config.enabled && bundle != kBundleSelf && !config.excluded.contains(bundle)
+            && !isUserOverriding(bundle) && !environment.secureInput()
+    }
 
-        let current = currentSourceID()
-        guard current != desired else { return }
+    private func isCurrent(bundle: String, pid: pid_t, token: Int) -> Bool {
+        let front = environment.frontmost()
+        return token == applyToken && front?.bundle == bundle && front?.pid == pid && eligible(bundle)
+    }
 
-        if secureInputActive() {
-            log("⏭ \(bundle) 处于安全键盘输入状态，跳过（避免打断密码输入）")
-            return
+    private func resolve(bundle: String, token: Int, completion: @escaping (String?) -> Void) {
+        resolvingToken = token
+        focusRequest = environment.resolve(bundle, configProvider()) { [weak self] desired in
+            guard let self = self, self.applyToken == token else { return }
+            self.resolvingToken = nil
+            completion(desired)
         }
-
-        log("⇄ [\(reason)] \(bundle): \(current ?? "nil") → \(desired)")
-        applyWithVerify(desired, bundle: bundle, attempt: 0, token: nextToken())
     }
 
-    private func nextToken() -> Int {
-        applyToken &+= 1
-        return applyToken
-    }
-
-    private func applyWithVerify(_ desired: String, bundle: String, attempt: Int, token: Int) {
-        guard token == applyToken else { return }
-
+    private func applyWithVerify(_ desired: String, bundle: String, pid: pid_t, attempt: Int, token: Int) {
+        guard isCurrent(bundle: bundle, pid: pid, token: token) else { return }
         expectedID = desired
-        expectedUntil = Date().addingTimeInterval(1.5)
+        expectedBundle = bundle
+        expectedUntil = environment.now().addingTimeInterval(1.5)
+        guard environment.select(desired) else { clearExpected(); return }
 
-        if !selectSource(desired) {
-            expectedID = nil
-            return
-        }
-
-        let delays = configProvider().verifyDelays
+        let delays = configProvider().validated().verifyDelays
         guard attempt < delays.count else { return }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + delays[attempt]) { [weak self] in
-            guard let self = self else { return }
-            // 期间又发起了新的切换，这条链已经过期，别再推一遍
-            guard token == self.applyToken else { return }
-            guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundle else { return }
-            guard !self.isUserOverriding else { return }
-            guard currentSourceID() != desired else { return }
-
-            log("↺ 被目标应用回滚，第 \(attempt + 1) 次重试 \(bundle)")
-            self.applyWithVerify(desired, bundle: bundle, attempt: attempt + 1, token: token)
+        environment.schedule(delays[attempt]) { [weak self] in
+            guard let self = self, self.isCurrent(bundle: bundle, pid: pid, token: token),
+                  self.environment.currentSource() != desired else { return }
+            // 再读一次最新位置，不能把旧位置的目标强加给新焦点。
+            self.resolve(bundle: bundle, token: token) { [weak self] latest in
+                guard let self = self, latest == desired,
+                      self.isCurrent(bundle: bundle, pid: pid, token: token) else { return }
+                log("↺ 第 \(attempt + 1) 次重试 \(bundle)")
+                self.applyWithVerify(desired, bundle: bundle, pid: pid, attempt: attempt + 1, token: token)
+            }
         }
     }
 
-    // MARK: - 看门狗
-
-    /// 兜底：AX 观察可能因为权限/版本失效，定时对一遍账
     func startWatchdog() {
-        watchdog?.invalidate()
-        watchdog = Timer.scheduledTimer(withTimeInterval: configProvider().watchdogInterval,
+        stopWatchdog()
+        watchdog = Timer.scheduledTimer(withTimeInterval: configProvider().validated().watchdogInterval,
                                        repeats: true) { [weak self] _ in
             self?.watchdogTick()
         }
     }
 
+    func watchdogTick() {
+        onWatchdog?()
+        // AX 较慢时让已有的有限读取完成，避免每次 tick 取消造成永久饥饿。
+        guard resolvingToken == nil else { return }
+        applyNow(reason: "看门狗")
+    }
+
     func stopWatchdog() {
         watchdog?.invalidate()
         watchdog = nil
-    }
-
-    private func watchdogTick() {
-        let config = configProvider()
-        guard config.enabled else { return }
-        guard let front = NSWorkspace.shared.frontmostApplication,
-              let bundle = front.bundleIdentifier,
-              bundle != kBundleSelf, !config.excluded.contains(bundle),
-              let desired = SourceResolver.desired(for: bundle, config: config) else { return }
-        guard !isUserOverriding else { return }
-        guard currentSourceID() != desired else { return }
-        guard !secureInputActive() else { return }
-
-        log("🛡 看门狗纠正 \(bundle) → \(desired)")
-        applyWithVerify(desired, bundle: bundle, attempt: 0, token: nextToken())
+        cancelPendingApply()
     }
 }

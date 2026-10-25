@@ -19,6 +19,7 @@ final class QuickPanelController: NSViewController {
     private var currentFingerprint: FocusFingerprint?
     /// 每次刷新 +1：异步补读回来时，如果面板已经重新刷过就丢弃结果
     private var spotToken = 0
+    private var spotRequest: FocusProbe.Request?
     /// 截图预览用：伪造一个焦点指纹（正常运行时永远是 nil）
     var demoFingerprint: FocusFingerprint?
 
@@ -176,6 +177,11 @@ final class QuickPanelController: NSViewController {
         }
 
         if let b = bundle, let rid = app.config.apps[b],
+           !rulePopup.itemArray.contains(where: { ($0.representedObject as? String) == rid }) {
+            rulePopup.addItem(withTitle: LF("source.unavailable", sourceName(rid) ?? rid))
+            rulePopup.lastItem?.representedObject = rid
+        }
+        if let b = bundle, let rid = app.config.apps[b],
            let idx = rulePopup.itemArray.firstIndex(where: { ($0.representedObject as? String) == rid }) {
             rulePopup.selectItem(at: idx)
         } else {
@@ -196,8 +202,9 @@ final class QuickPanelController: NSViewController {
     ///
     /// 抓不到焦点不等于「没有位置」。Electron 应用的 AX 树是懒建的，
     /// 点菜单栏图标这一瞬间去问，经常先拿到一个「目标未应答」，
-    /// 隔几十毫秒再问就有了。所以这里分三步：同步重试 → 异步补读 → 上次位置兜底。
+    /// 隔几十毫秒再问就有了。所以这里分三步：异步读取与有限重试 → 上次位置兜底。
     private func refreshSpot(bundle: String?) {
+        spotRequest?.cancel()
         spotPopup.removeAllItems()
         spotToken &+= 1
         let token = spotToken
@@ -218,10 +225,12 @@ final class QuickPanelController: NSViewController {
             return
         }
 
-        if let fp = FocusProbe.fingerprint(ofRunning: b) {
-            applySpot(fp, bundle: b, interactive: true)
+        guard AXIsProcessTrusted() else {
+            showSpotUnavailable(interactive: false)
+            spotLabel.toolTip = L("accessibility.repair.hint")
             return
         }
+        spotLabel.toolTip = nil
 
         // 应用没在运行就没有焦点可读，别让用户看「读取中」干等
         guard FocusProbe.runningApp(bundle: b) != nil else {
@@ -238,7 +247,7 @@ final class QuickPanelController: NSViewController {
         spotPopup.isEnabled = false
         resizeToFit()
 
-        FocusProbe.retryAsync(bundle: b) { [weak self] fp in
+        spotRequest = FocusProbe.retryAsync(bundle: b) { [weak self] fp in
             guard let self = self, token == self.spotToken else { return }
             self.applySpot(fp, bundle: b, interactive: true)
         } onGiveUp: { [weak self] in
@@ -252,6 +261,8 @@ final class QuickPanelController: NSViewController {
             }
         }
     }
+
+    deinit { spotRequest?.cancel() }
 
     /// 内容变了之后重算面板高度（异步补读回来时文字长度会变）
     private func resizeToFit() {
@@ -279,6 +290,11 @@ final class QuickPanelController: NSViewController {
             spotPopup.lastItem?.representedObject = s.id
         }
 
+        if let rule = matched,
+           !spotPopup.itemArray.contains(where: { ($0.representedObject as? String) == rule.source }) {
+            spotPopup.addItem(withTitle: LF("source.unavailable", sourceName(rule.source) ?? rule.source))
+            spotPopup.lastItem?.representedObject = rule.source
+        }
         if let rule = matched,
            let idx = spotPopup.itemArray.firstIndex(where: {
                ($0.representedObject as? String) == rule.source
@@ -314,7 +330,6 @@ final class QuickPanelController: NSViewController {
         guard let app = app, let b = currentBundle, b != kBundleSelf else { return }
         let id = rulePopup.selectedItem?.representedObject as? String
         app.setAppRule(bundle: b, source: id)
-        app.reloadSettingsWindow()
         log("✎ 小面板设置 \(b) → \(id ?? "不设置")")
     }
 

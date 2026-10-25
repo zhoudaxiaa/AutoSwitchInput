@@ -10,6 +10,11 @@ extension AppController {
         // 一旦 matched 是条误匹配的旧规则，新规则会被冠上别人的名字
         // （Copilot 聊天框被标成「编辑器」就是这么来的）
         let label = ContextRuleEngine.displayLabel(fp, matchedNote: matched?.note)
+        // 删除只操作实际命中的规则，不触发冲突收窄或重新推导位置。
+        guard let source = source else {
+            if let matched = matched { removeContextRule(id: matched.id) }
+            return
+        }
 
         // 先做冲突消解：两个位置特征撞车时，把彼此都收窄到各自独有的 class。
         // 只收窄新的那个是不够的 —— 旧规则还留在原地继续吃掉新位置。
@@ -18,52 +23,52 @@ extension AppController {
         for n in res.narrowings {
             guard config.contexts.indices.contains(n.index) else { continue }
             config.contexts[n.index].classContains = n.to
+            config.contexts[n.index].classExact = true
             config.contexts[n.index].identifier = nil
             config.contexts[n.index].titleContains = nil
         }
 
-        let probe = ContextRuleEngine.make(bundle: bundle, source: source ?? "",
+        var probe = ContextRuleEngine.make(bundle: bundle, source: source,
                                            fp: fp, note: label, classOverride: res.classForNew)
 
-        // 同一个位置只留一条，避免越点越多
-        config.contexts.removeAll { $0.bundle == bundle && ContextRuleEngine.sameSpot($0, probe) }
-
-        if let source = source {
-            var rule = probe
-            rule.source = source
-            config.contexts.append(rule)
-            let how = rule.classContains ?? rule.identifier ?? rule.titleContains ?? rule.role ?? "-"
-            log("✎ 位置规则 \(bundle) [\(rule.note ?? "-")] → \(source) via \(how)")
-        } else {
-            log("✎ 清除位置规则 \(bundle) [\(probe.note ?? "-")]")
+        // 匹配条件变化后仍保留位置身份；删除不再依赖数组下标。
+        if let existing = config.contexts.first(where: {
+            $0.bundle == bundle && ContextRuleEngine.isSameSpot($0, fp)
+                && ContextRuleEngine.matches($0, fp)
+        }) {
+            probe.id = existing.id
+        }
+        config.contexts.removeAll {
+            $0.bundle == bundle && ($0.id == probe.id || ContextRuleEngine.sameSpot($0, probe))
         }
 
-        saveConfig()
-        refreshStatusTitle()
-        settings.reload()
-        // 面板是从下拉菜单里点出来的，先让菜单收起再重建，
-        // 否则会在 NSPopUpButton 自己的 action 里销毁正在派发事件的那个控件
-        DispatchQueue.main.async { [weak self] in self?.statusBar.refreshPanel() }
-        engine.scheduleApply(reason: "位置规则变更")
+        config.contexts.append(probe)
+        let how = ContextRuleEngine.conditionDescription(probe)
+        log("✎ 位置规则 \(bundle) [\(probe.note ?? "-")] → \(source) via \(how)")
+
+        engine.clearUserOverride()
+        commitConfig(reason: "位置规则变更")
     }
 
-    func removeContextRule(at index: Int) {
-        guard config.contexts.indices.contains(index) else { return }
+    func removeContextRule(id: UUID) {
+        guard let index = config.contexts.firstIndex(where: { $0.id == id }) else { return }
         let rule = config.contexts.remove(at: index)
-        saveConfig()
         log("✎ 删除位置规则 \(rule.bundle) [\(rule.note ?? "-")]")
-        settings.reload()
-        engine.scheduleApply(reason: "删除位置规则")
+        engine.clearUserOverride()
+        commitConfig(reason: "删除位置规则")
+    }
+
+    func setContextSource(id: UUID, source: String) {
+        guard let index = config.contexts.firstIndex(where: { $0.id == id }) else { return }
+        config.contexts[index].source = source
+        engine.clearUserOverride()
+        commitConfig(reason: "修改位置输入法")
     }
 
     func clearContextRules(for bundle: String) {
-        let n = config.contexts.filter { $0.bundle == bundle }.count
-        guard n > 0 else { return }
+        guard config.hasContextRules(for: bundle) else { return }
         config.contexts.removeAll { $0.bundle == bundle }
-        saveConfig()
-        log("✎ 清除位置规则 \(bundle) ×\(n)")
-        settings.reload()
-        statusBar.refreshPanel()
-        engine.scheduleApply(reason: "清除位置规则")
+        engine.clearUserOverride()
+        commitConfig(reason: "清除位置规则")
     }
 }
