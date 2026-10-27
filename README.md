@@ -249,6 +249,7 @@ src/
 - **绝不缓存 `TISInputSource`**。输入法进程重启后旧引用会静默失效，这是同类工具「经常失灵」的根因。
 - **Electron 的无障碍树要主动叫它建**。Chromium 只在客户端请求时才搭 AX 树，否则 `AXFocusedUIElement` 一律返回 `noValue`（`AXFocusedWindow` 却是好的，很容易误判成「应用不支持 AX」）。所以 `FocusProbe` 会在应用激活时设一次 `AXManualAccessibility`，读取时再做有限重试。
 - **区分「位置」要靠祖先的 DOM class，不能只看焦点元素自身**。VS Code 的代码编辑器和 Copilot 聊天框，焦点元素都是 `native-edit-context`，往上第 3 层才不同（`editor-instance` vs `chat-input-container`）。所以 `FocusFingerprint` 同时收 `domClasses` 和 `ancestorClasses`。
+- **小面板必须先采集，再激活自己**。VS Code 失焦后可能不再返回 `AXFocusedUIElement`。点击图标时先异步采集目标，再展示面板；本次打开期间的规则刷新复用这次快照，不把历史缓存当作可编辑的当前位置。采集中切换应用或再次点击图标会取消本次打开。
 - **位置撞车时用「差异定位」，不要靠类名黑名单**。通用类名单永远漏项（`showUnused` 就这么漏过一次）。真正可靠的办法是：每条位置规则存一份 `signature`（保存时那处的祖先链快照）；新位置若和已有规则撞车，就把两条链摆在一起比，各自退到「只有自己有」的那个 class。通用类在两条链里都有，会自动落进公共部分被跳过 —— 不需要知道它们叫什么。
   - 撞车必须**双向收窄**：只改新位置不够，旧规则还留在原地继续吃，就成了「改一个两边一起变」。
   - 老规则没有快照时，至少用它已用的 class 占位（`pseudoSignature`），配合 specificity 降权兜底。

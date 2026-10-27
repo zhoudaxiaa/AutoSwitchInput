@@ -99,7 +99,7 @@ final class TriggerCenter: NSObject {
         let e1 = AXObserverAddNotification(obs, appEl, kAXFocusedUIElementChangedNotification as CFString, refcon)
         let e2 = AXObserverAddNotification(obs, appEl, kAXFocusedWindowChangedNotification as CFString, refcon)
         if e1 != .success && e2 != .success {
-            log("AX 通知注册失败(\(bundle))：\(e1.rawValue)/\(e2.rawValue)（多半是未授权辅助功能）")
+            log("AX 通知注册失败(\(bundle))：\(axErrorName(e1))/\(axErrorName(e2)) trusted=\(AXIsProcessTrusted())")
             return
         }
 

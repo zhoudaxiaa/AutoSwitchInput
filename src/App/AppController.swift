@@ -24,6 +24,8 @@ final class AppController: NSObject, AppActions {
     private var learningPolicy = LearningPolicy()
     private var refreshScheduled = false
     private var accessibilityTrusted = false
+    private var diagnosticRequest: FocusProbe.Request?
+    private var diagnosticPending = false
 
     // MARK: - 启动与退出
 
@@ -183,6 +185,17 @@ final class AppController: NSObject, AppActions {
             guard let front = NSWorkspace.shared.frontmostApplication,
                   let bundle = front.bundleIdentifier, bundle != kBundleSelf else { return }
             self?.triggers.attachAXObserver(pid: front.processIdentifier, bundle: bundle)
+            // debug-ax 存在时主动采样，未配置位置规则也能定位采集失败。
+            if let self = self, !self.diagnosticPending,
+               FileManager.default.fileExists(atPath: AppPaths.debugAXMarkerURL.path) {
+                self.diagnosticPending = true
+                self.diagnosticRequest = FocusProbe.retryAsync(bundle: bundle, requireFrontmost: true,
+                                                               diagnostic: true) { [weak self] _ in
+                    self?.diagnosticPending = false
+                } onGiveUp: { [weak self] in
+                    self?.diagnosticPending = false
+                }
+            }
         }
         triggers.start()
     }

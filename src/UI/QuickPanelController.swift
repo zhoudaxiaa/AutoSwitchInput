@@ -22,6 +22,10 @@ final class QuickPanelController: NSViewController {
     private var spotRequest: FocusProbe.Request?
     /// 截图预览用：伪造一个焦点指纹（正常运行时永远是 nil）
     var demoFingerprint: FocusFingerprint?
+    /// 仅本次打开面板的快照；不能用历史缓存代替可编辑的当前位置。
+    var capturedBundle: String?
+    var capturedFingerprint: FocusFingerprint?
+    var didCaptureBeforeOpening = false
 
     private let panelWidth: CGFloat = 300
     private var contentWidth: CGFloat { panelWidth - 28 }
@@ -149,7 +153,7 @@ final class QuickPanelController: NSViewController {
     func refresh() {
         guard let app = app else { return }
 
-        let bundle = app.lastExternalBundle
+        let bundle = capturedBundle ?? app.lastExternalBundle
             ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         currentBundle = bundle
 
@@ -232,6 +236,15 @@ final class QuickPanelController: NSViewController {
         }
         spotLabel.toolTip = nil
 
+        if didCaptureBeforeOpening {
+            if let fp = capturedFingerprint, capturedBundle == b {
+                applySpot(fp, bundle: b, interactive: true)
+            } else {
+                showSpotUnavailable(interactive: false)
+            }
+            return
+        }
+
         // 应用没在运行就没有焦点可读，别让用户看「读取中」干等
         guard FocusProbe.runningApp(bundle: b) != nil else {
             showSpotUnavailable(interactive: false)
@@ -247,7 +260,7 @@ final class QuickPanelController: NSViewController {
         spotPopup.isEnabled = false
         resizeToFit()
 
-        spotRequest = FocusProbe.retryAsync(bundle: b) { [weak self] fp in
+        spotRequest = FocusProbe.retryAsync(bundle: b, diagnostic: true) { [weak self] fp in
             guard let self = self, token == self.spotToken else { return }
             self.applySpot(fp, bundle: b, interactive: true)
         } onGiveUp: { [weak self] in

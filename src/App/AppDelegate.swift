@@ -16,6 +16,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(showWindowNote),
             name: kShowWindowNote, object: nil, suspensionBehavior: .deliverImmediately)
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(togglePanelNote),
+            name: kTogglePanelNote, object: nil, suspensionBehavior: .deliverImmediately)
 
         NSAppleEventManager.shared().setEventHandler(
             self,
@@ -32,7 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
         if !others.isEmpty {
             DistributedNotificationCenter.default().postNotificationName(
-                kShowWindowNote, object: nil, userInfo: nil, deliverImmediately: true)
+                CommandLine.arguments.contains("--toggle-panel") ? kTogglePanelNote : kShowWindowNote,
+                object: nil, userInfo: nil, deliverImmediately: true)
             NSApp.terminate(nil)
             return
         }
@@ -61,5 +65,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func showWindowNote() {
         DispatchQueue.main.async { self.controller.openSettings() }
+    }
+
+    @objc func togglePanelNote() {
+        DispatchQueue.main.async { self.controller.togglePopover() }
     }
 }

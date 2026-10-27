@@ -12,6 +12,9 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate {
     private var popover: NSPopover?
     private var quickPanel: QuickPanelController?
     private var popoverLastClosed: Date = .distantPast
+    private var openingRequest: FocusProbe.Request?
+    private var openingToken = 0
+    private var opening = false
 
     func install() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -42,7 +45,12 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate {
     // MARK: - 小面板
 
     func togglePopover() {
-        guard let button = statusItem?.button, let host = host else { return }
+        guard statusItem?.button != nil, let host = host else { return }
+
+        if opening {
+            cancelOpening()
+            return
+        }
 
         if let p = popover, p.isShown {
             p.performClose(nil)
@@ -51,8 +59,51 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate {
         // transient 面板会先因「点击外部」关闭再触发 action，避免反复开合
         if Date().timeIntervalSince(popoverLastClosed) < 0.25 { return }
 
+        let target = FocusProbe.frontmostExternal()?.bundle ?? host.lastExternalBundle
+        log("面板采集开始 target=\(target ?? "nil") front=\(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil")")
+        guard let bundle = target, bundle != kBundleSelf else {
+            showPopover(bundle: nil, fingerprint: nil)
+            return
+        }
+        guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundle else {
+            showPopover(bundle: bundle, fingerprint: nil)
+            return
+        }
+        // 必须在激活自己、让目标应用失焦之前完成读取。
+        // Electron 失焦后 AXFocusedUIElement 会返回 noValue，重试也无法补救。
+        opening = true
+        openingToken &+= 1
+        let token = openingToken
+        openingRequest = FocusProbe.retryAsync(bundle: bundle, requireFrontmost: true,
+                                               diagnostic: true) { [weak self] fp in
+            guard let self = self, self.opening, self.openingToken == token else { return }
+            self.opening = false
+            self.showPopover(bundle: bundle, fingerprint: fp)
+        } onGiveUp: { [weak self] in
+            guard let self = self, self.opening, self.openingToken == token else { return }
+            self.opening = false
+            // 用户已切到别的应用时，不再弹出旧目标的面板抢焦点。
+            guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundle else { return }
+            self.showPopover(bundle: bundle, fingerprint: nil)
+        }
+    }
+
+    private func cancelOpening() {
+        opening = false
+        openingToken &+= 1
+        openingRequest?.cancel()
+        openingRequest = nil
+    }
+
+    private func showPopover(bundle: String?, fingerprint: FocusFingerprint?) {
+        guard let button = statusItem?.button, let host = host else { return }
+        log("面板展示 target=\(bundle ?? "nil") captured=\(fingerprint != nil)")
+
         let panel = QuickPanelController()
         panel.app = host
+        panel.capturedBundle = bundle
+        panel.capturedFingerprint = fingerprint
+        panel.didCaptureBeforeOpening = true
         panel.refresh()
 
         let p = NSPopover()
@@ -70,6 +121,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate {
     }
 
     func closePopover() {
+        cancelOpening()
         popover?.performClose(nil)
     }
 

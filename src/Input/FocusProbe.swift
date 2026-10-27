@@ -27,6 +27,16 @@ enum FocusProbe {
     private static let queue = DispatchQueue(label: "com.local.autoswitchinput.focus", qos: .userInitiated)
     /// 仅由 queue 访问。权限恢复后，失败的请求可以再次尝试。
     private static var manualAXAsked: Set<pid_t> = []
+    /// 在主线程记录诊断，避免在 AX 工作队列并发写日志。
+    private static var lastDiagnostic: [String: (String, Date)] = [:]
+
+    private static func diagnose(_ bundle: String, _ message: String) {
+        if let previous = lastDiagnostic[bundle], previous.0 == message,
+           Date().timeIntervalSince(previous.1) < 10 { return }
+        if lastDiagnostic.count > 64 { lastDiagnostic.removeAll() }
+        lastDiagnostic[bundle] = (message, Date())
+        log("AX 焦点 \(bundle): \(message)")
+    }
 
     static func runningApp(bundle: String) -> NSRunningApplication? {
         NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first
@@ -66,22 +76,27 @@ enum FocusProbe {
     static func retryAsync(bundle: String,
                            delays: [Double] = [0, 0.06, 0.18, 0.45],
                            requireFrontmost: Bool = false,
+                           diagnostic: Bool = false,
                            completion: @escaping (FocusFingerprint) -> Void,
                            onGiveUp: @escaping () -> Void = {}) -> Request {
         let request = Request()
-        guard AXIsProcessTrusted() else { onGiveUp(); return request }
+        guard AXIsProcessTrusted() else {
+            if diagnostic { diagnose(bundle, "未获得辅助功能权限") }
+            onGiveUp(); return request
+        }
         let target = requireFrontmost ? NSWorkspace.shared.frontmostApplication : runningApp(bundle: bundle)
         guard let target = target, target.bundleIdentifier == bundle else {
             onGiveUp()
             return request
         }
         scheduleRetry(request, bundle: bundle, pid: target.processIdentifier, index: 0, delays: delays,
-                      requireFrontmost: requireFrontmost, completion: completion, onGiveUp: onGiveUp)
+                      requireFrontmost: requireFrontmost, diagnostic: diagnostic, completion: completion, onGiveUp: onGiveUp)
         return request
     }
 
     private static func scheduleRetry(_ request: Request, bundle: String, pid: pid_t,
                                       index: Int, delays: [Double], requireFrontmost: Bool,
+                                      diagnostic: Bool,
                                       completion: @escaping (FocusFingerprint) -> Void,
                                       onGiveUp: @escaping () -> Void) {
         guard !request.cancelled else { return }
@@ -95,7 +110,7 @@ enum FocusProbe {
             }
             queue.async {
                 guard !request.cancelled else { return }
-                askForFullAXTree(pid: pid)
+                let treeError = askForFullAXTree(pid: pid)
                 let result = focusedElementResult(pid: pid)
                 let fp = result.element.flatMap(fingerprintOfElement)
                 DispatchQueue.main.async {
@@ -106,12 +121,19 @@ enum FocusProbe {
                         return
                     }
                     if let fp = fp {
+                        if diagnostic {
+                            diagnose(bundle, "pid=\(pid) 成功 role=\(fp.role) dom=\(fp.domClasses) ancestors=\(fp.ancestorClasses) tree=\(treeError.map(axErrorName) ?? "已请求")")
+                        }
                         remember(fp, for: bundle)
                         completion(fp)
                     } else if result.error == .success || axErrorIsRetryable(result.error) {
+                        if diagnostic {
+                            diagnose(bundle, "pid=\(pid) 第\(index + 1)次读取失败 error=\(axErrorName(result.error)) 空指纹=\(result.element != nil) tree=\(treeError.map(axErrorName) ?? "已请求")")
+                        }
                         scheduleRetry(request, bundle: bundle, pid: pid, index: index + 1, delays: delays,
-                                      requireFrontmost: requireFrontmost, completion: completion, onGiveUp: onGiveUp)
+                                      requireFrontmost: requireFrontmost, diagnostic: diagnostic, completion: completion, onGiveUp: onGiveUp)
                     } else {
+                        if diagnostic { diagnose(bundle, "pid=\(pid) 不可重试 error=\(axErrorName(result.error))") }
                         onGiveUp()
                     }
                 }
@@ -119,13 +141,15 @@ enum FocusProbe {
         }
     }
 
-    private static func askForFullAXTree(pid: pid_t) {
-        guard !manualAXAsked.contains(pid) else { return }
+    @discardableResult
+    private static func askForFullAXTree(pid: pid_t) -> AXError? {
+        guard !manualAXAsked.contains(pid) else { return nil }
         if manualAXAsked.count > 64 { manualAXAsked.removeAll() }
         let element = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(element, 0.15)
         let error = AXUIElementSetAttributeValue(element, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         if error == .success { manualAXAsked.insert(pid) }
+        return error
     }
 
     static func prepare(bundle: String) {
